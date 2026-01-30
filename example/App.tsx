@@ -20,6 +20,7 @@ import {
 import { Worklets } from 'react-native-worklets-core';
 import {
   DocumentRecognizer,
+  DualImageRecognizer,
   formatTableAsText,
   formatTableAsQuotedCSV,
   formatTableWithConfidences,
@@ -46,10 +47,12 @@ export default function App() {
   const [detectedText, setDetectedText] = React.useState<string>();
   const [image, setImage] = React.useState<string | null>(null);
   const [imageText, setImageText] = React.useState<string>('');
-  const [modalMode, setModalMode] = React.useState<'photo' | 'document'>('photo');
+  const [modalMode, setModalMode] = React.useState<'photo' | 'document' | 'dual'>('photo');
   const [detectedTables, setDetectedTables] = React.useState<DetectedTable[]>([]);
   const [cellConfidences, setCellConfidences] = React.useState<CellConfidence[]>([]);
   const [isProcessing, setIsProcessing] = React.useState(false);
+  const [leftImage, setLeftImage] = React.useState<string | null>(null);
+  const [rightImage, setRightImage] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (!hasPermission) requestPermission();
@@ -174,6 +177,58 @@ export default function App() {
     [scanText, onText]
   );
 
+  const pickDualImages = async () => {
+    const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permissionResult.granted) {
+      Alert.alert('Permission required', 'Permission to access the media library is required.');
+      return;
+    }
+
+    const leftResult = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: false,
+      quality: 1,
+    });
+
+    if (leftResult.canceled) return;
+
+    const rightResult = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: false,
+      quality: 1,
+    });
+
+    if (rightResult.canceled) return;
+
+    setLeftImage(leftResult.assets[0].uri);
+    setRightImage(rightResult.assets[0].uri);
+    setModalMode('dual');
+    setImage('dual');
+  };
+
+  React.useEffect(() => {
+    const processDualImages = async () => {
+      if (!leftImage || !rightImage) return;
+      
+      setIsProcessing(true);
+      setImageText('');
+
+      try {
+        const result = await DualImageRecognizer({
+          leftUri: leftImage,
+          rightUri: rightImage,
+        });
+        setImageText(result.csv);
+      } catch (error) {
+        Alert.alert('Error processing images', (error as Error).message);
+      } finally {
+        setIsProcessing(false);
+      }
+    };
+
+    processDualImages();
+  }, [leftImage, rightImage]);
+
   const pickImage = async (mode: 'photo' | 'document') => {
     const permissionResult =
       await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -232,6 +287,8 @@ export default function App() {
 
   const closeModal = () => {
     setImage(null);
+    setLeftImage(null);
+    setRightImage(null);
     setDetectedTables([]);
     setCellConfidences([]);
     setImageText('');
@@ -265,6 +322,8 @@ export default function App() {
           <Button title="Photo OCR" onPress={() => pickImage('photo')} />
           <View style={styles.buttonSpacer} />
           <Button title="Table Scanner" onPress={() => pickImage('document')} />
+          <View style={styles.buttonSpacer} />
+          <Button title="Dual Table" onPress={pickDualImages} />
         </View>
       </View>
       
@@ -282,6 +341,18 @@ export default function App() {
             {isProcessing ? (
               <View style={styles.processingContainer}>
                 <Text style={styles.processingText}>Processing image...</Text>
+              </View>
+            ) : modalMode === 'dual' ? (
+              <View style={styles.overlay}>
+                <Text style={styles.title}>Combined CSV:</Text>
+                <ScrollView horizontal>
+                  <Text style={styles.line}>{imageText}</Text>
+                </ScrollView>
+                {imageText && (
+                  <View style={styles.shareButtons}>
+                    <Button title="Share CSV" onPress={shareTableAsText} />
+                  </View>
+                )}
               </View>
             ) : modalMode === 'document' ? (
               <View style={styles.tableResults}>
