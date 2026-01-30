@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "RNVC OCR+",
-    "slug": "vision-ocr-example",
+    "name": "RNVC OCR+LLM",
+    "slug": "vision-ocr-example-llm",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -19,7 +19,7 @@
         "NSLocationWhenInUseUsageDescription": "Allow $(PRODUCT_NAME) to access your location for geotagging photos",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "bundleIdentifier": "com.dfrvisionocr.example"
+      "bundleIdentifier": "com.dfrvisionocrllm.example"
     },
     "android": {
       "edgeToEdgeEnabled": true,
@@ -28,7 +28,7 @@
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ],
-      "package": "com.dfrvisionocr.example"
+      "package": "com.dfrvisionocrllm.example"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -39,8 +39,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "90760f30-4af3-41ef-8436-8680c1fedb69"
+        "projectId": "208763f2-4485-4b66-a01f-379df0dd1b97"
       }
-    }
+    },
+    "owner": "dreid5550"
   }
 }

@@ -5,6 +5,7 @@ yarn add --dev @expo/cli@latest eas-cli@latest
 yarn
 yarn prepare
 cd example
+eas init
 yarn
 npx expo prebuild --clean
 eas build --platform ios --profile production --auto-submit
