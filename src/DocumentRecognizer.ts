@@ -154,6 +154,62 @@ export interface DocumentRecognizerOptions {
 }
 
 /**
+ * Recognizes tables from two images (left and right pages) and combines them into a single CSV.
+ * 
+ * @param leftUri - URI of the left page image
+ * @param rightUri - URI of the right page image
+ * @returns Promise resolving to combined CSV string
+ * 
+ * @example
+ * ```typescript
+ * const result = await DualImageRecognizer({
+ *   leftUri: 'file:///path/to/left.jpg',
+ *   rightUri: 'file:///path/to/right.jpg'
+ * });
+ * console.log(result.csv);
+ * ```
+ */
+export async function DualImageRecognizer(options: {
+  leftUri: string;
+  rightUri: string;
+}): Promise<{ csv: string }> {
+  const { DocumentRecognizerModule } = NativeModules;
+  const { leftUri, rightUri } = options;
+
+  if (!leftUri || !rightUri) {
+    throw new Error("Both left and right image URIs are required");
+  }
+
+  if (
+    !DocumentRecognizerModule ||
+    typeof DocumentRecognizerModule.processDualImages !== 'function'
+  ) {
+    throw new Error(
+      'DocumentRecognizerModule.processDualImages is not available. Please ensure react-native-vision-camera-ocr-plus is correctly installed.'
+    );
+  }
+
+  let processLeftUri = leftUri;
+  let processRightUri = rightUri;
+
+  if (Platform.OS === 'ios') {
+    processLeftUri = leftUri.replace('file://', '');
+    processRightUri = rightUri.replace('file://', '');
+  } else {
+    const hasSchemeLeft = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(processLeftUri);
+    if (!hasSchemeLeft) {
+      processLeftUri = `file://${processLeftUri}`;
+    }
+    const hasSchemeRight = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(processRightUri);
+    if (!hasSchemeRight) {
+      processRightUri = `file://${processRightUri}`;
+    }
+  }
+
+  return await DocumentRecognizerModule.processDualImages(processLeftUri, processRightUri);
+}
+
+/**
  * Recognizes tables in document images.
  * 
  * On iOS 26+, uses native RecognizeDocumentsRequest for accurate table detection.

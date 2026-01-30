@@ -6,6 +6,7 @@ export { PhotoRecognizer } from './PhotoRecognizer';
 
 export {
   DocumentRecognizer,
+  DualImageRecognizer,
   formatTableAsText,
   formatTableAsCSV,
   formatTableAsQuotedCSV,

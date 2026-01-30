@@ -67,4 +67,9 @@ RCT_EXTERN_METHOD(process:(NSString *)uri
                   withResolver:(RCTPromiseResolveBlock)resolve
                   withRejecter:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(processDualImages:(NSString *)leftUri
+                  rightUri:(NSString *)rightUri
+                  withResolver:(RCTPromiseResolveBlock)resolve
+                  withRejecter:(RCTPromiseRejectBlock)reject)
+
 @end
