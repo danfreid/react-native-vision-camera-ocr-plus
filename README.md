@@ -1,3 +1,5 @@
+# DFR
+
 # 📷 react-native-vision-camera-ocr-plus
 
 [![CI Status](https://github.com/jamenamcinteer/react-native-vision-camera-ocr-plus/actions/workflows/ci.yml/badge.svg)](https://github.com/jamenamcinteer/react-native-vision-camera-ocr-plus/actions/workflows/ci.yml)
@@ -18,23 +20,23 @@ A **React Native Vision Camera** frame processor for **on-device text recognitio
 The original packages are **no longer actively maintained**.  
 This fork provides:
 
-- ✅ Ongoing maintenance and compatibility with **React Native 0.76+** and **Vision Camera v4+**  
-- 🧠 **Translation support** (not just OCR) powered by ML Kit  
-- 🛠 **Improved stability and error handling**  
-- 🚀 **Faster processing** and frame optimization  
-- 📦 **TypeScript definitions** included  
+- ✅ Ongoing maintenance and compatibility with **React Native 0.76+** and **Vision Camera v4+**
+- 🧠 **Translation support** (not just OCR) powered by ML Kit
+- 🛠 **Improved stability and error handling**
+- 🚀 **Faster processing** and frame optimization
+- 📦 **TypeScript definitions** included
 - 🧩 Consistent API that works seamlessly with modern React Native projects
 
 ---
 
 ## 🚀 Features
 
-- 🧩 Simple drop-in API  
-- ⚡ Fast, accurate on-device OCR  
-- 📱 Works on **Android** and **iOS**  
-- 🌐 Built-in translation via ML Kit  
-- 📸 Recognize text from live camera or static photos  
-- 🪄 Written in **Kotlin** and **Swift**  
+- 🧩 Simple drop-in API
+- ⚡ Fast, accurate on-device OCR
+- 📱 Works on **Android** and **iOS**
+- 🌐 Built-in translation via ML Kit
+- 📸 Recognize text from live camera or static photos
+- 🪄 Written in **Kotlin** and **Swift**
 - 🔧 Compatible with `react-native-vision-camera` and `react-native-worklets-core`
 - 🔥 Compatible with Firebase
 
@@ -52,6 +54,7 @@ yarn add react-native-vision-camera-ocr-plus
 ```
 
 ### 🔥 Firebase Compatibility
+
 If you have Firebase in your project, you will need to set your iOS Deployment Target to at least 16.0.
 
 ### ⚠️ iOS Simulator (Apple Silicon) – Heads-up
@@ -67,10 +70,10 @@ The library works correctly on **physical iOS devices** and on the **iOS Simulat
 
 ## 🔄 Migration
 
-| Previous Package | Replacement | Notes |
-|------------------|-------------|-------|
+| Previous Package                              | Replacement                              | Notes                                      |
+| --------------------------------------------- | ---------------------------------------- | ------------------------------------------ |
 | `react-native-vision-camera-text-recognition` | ✅ `react-native-vision-camera-ocr-plus` | Drop-in replacement with fixes and updates |
-| `vision-camera-ocr` | ✅ `react-native-vision-camera-ocr-plus` | Actively maintained alternative |
+| `vision-camera-ocr`                           | ✅ `react-native-vision-camera-ocr-plus` | Actively maintained alternative            |
 
 ---
 
@@ -145,7 +148,11 @@ export default function App() {
 ```jsx
 import React from 'react';
 import { StyleSheet } from 'react-native';
-import { Camera, useCameraDevice, useFrameProcessor } from 'react-native-vision-camera';
+import {
+  Camera,
+  useCameraDevice,
+  useFrameProcessor,
+} from 'react-native-vision-camera';
 import { useTextRecognition } from 'react-native-vision-camera-ocr-plus';
 
 export default function App() {
@@ -178,14 +185,14 @@ export default function App() {
 
 ## ⚙️ Options
 
-| Option | Type | Values | Default | Description |
-|:-------|:-----|:--------|:---------|:------------|
-| `language` | `string` | `latin`, `chinese`, `devanagari`, `japanese`, `korean` | `latin` | Text recognition language |
-| `mode` | `string` | `recognize`, `translate` | `recognize` | Processing mode |
-| `from`, `to` | `string` | See [Supported Languages](#-supported-languages) | `en`, `de` | Translation languages |
-| `scanRegion` | `object` | `{ left, top, width, height }` | `undefined` | Define a specific region to scan (values are string percentage proportions 0-100) |
-| `frameSkipThreshold` | `number` | Any positive integer | `10` | Skip frames for better performance (higher = faster) |
-| `useLightweightMode` | `boolean` | `true`, `false` | `false` | (Android Only) Use lightweight processing for better performance |
+| Option               | Type      | Values                                                 | Default     | Description                                                                       |
+| :------------------- | :-------- | :----------------------------------------------------- | :---------- | :-------------------------------------------------------------------------------- |
+| `language`           | `string`  | `latin`, `chinese`, `devanagari`, `japanese`, `korean` | `latin`     | Text recognition language                                                         |
+| `mode`               | `string`  | `recognize`, `translate`                               | `recognize` | Processing mode                                                                   |
+| `from`, `to`         | `string`  | See [Supported Languages](#-supported-languages)       | `en`, `de`  | Translation languages                                                             |
+| `scanRegion`         | `object`  | `{ left, top, width, height }`                         | `undefined` | Define a specific region to scan (values are string percentage proportions 0-100) |
+| `frameSkipThreshold` | `number`  | Any positive integer                                   | `10`        | Skip frames for better performance (higher = faster)                              |
+| `useLightweightMode` | `boolean` | `true`, `false`                                        | `false`     | (Android Only) Use lightweight processing for better performance                  |
 
 ---
 
@@ -200,7 +207,11 @@ You can specify a specific region of the camera frame to scan for text. This is 
 ```jsx
 import React from 'react';
 import { StyleSheet } from 'react-native';
-import { Camera, useCameraDevice, useFrameProcessor } from 'react-native-vision-camera';
+import {
+  Camera,
+  useCameraDevice,
+  useFrameProcessor,
+} from 'react-native-vision-camera';
 import { useTextRecognition } from 'react-native-vision-camera-ocr-plus';
 
 export default function App() {
@@ -208,11 +219,11 @@ export default function App() {
   const { scanText } = useTextRecognition({
     language: 'latin',
     scanRegion: {
-      left: '5%',    // Start 5% from the left edge
-      top: '25%',     // Start 25% from the top edge
-      width: '80%',   // Span 80% of frame width
-      height: '40%'   // Span 40% of frame height
-    }
+      left: '5%', // Start 5% from the left edge
+      top: '25%', // Start 25% from the top edge
+      width: '80%', // Span 80% of frame width
+      height: '40%', // Span 40% of frame height
+    },
   });
 
   const frameProcessor = useFrameProcessor((frame) => {
@@ -244,41 +255,43 @@ For better performance on Android devices, especially mid-range phones, you can 
 // Higher performance (recommended for real-time scanning)
 const { scanText } = useTextRecognition({
   language: 'latin',
-  frameSkipThreshold: 10,      // Process every 10th frame
-  useLightweightMode: true    // Skip detailed corner points and element processing
+  frameSkipThreshold: 10, // Process every 10th frame
+  useLightweightMode: true, // Skip detailed corner points and element processing
 });
 
 // Balanced performance/accuracy
 const { scanText } = useTextRecognition({
   language: 'latin',
-  frameSkipThreshold: 3,      // Process every 3rd frame
-  useLightweightMode: true
+  frameSkipThreshold: 3, // Process every 3rd frame
+  useLightweightMode: true,
 });
 
 // Maximum accuracy (slower)
 const { scanText } = useTextRecognition({
   language: 'latin',
-  frameSkipThreshold: 1,      // Process every frame
-  useLightweightMode: false   // Full detailed data
+  frameSkipThreshold: 1, // Process every frame
+  useLightweightMode: false, // Full detailed data
 });
 ```
 
 You can also improve the performance by using `runAtTargetFps` in your frame processor:
+
 ```jsx
 const frameProcessor = useFrameProcessor(
-    (frame) => {
-        'worklet';
-        runAtTargetFps(2, () => {
-            const data = scanText(frame);
-        });
-    },
-    [scanText],
+  (frame) => {
+    'worklet';
+    runAtTargetFps(2, () => {
+      const data = scanText(frame);
+    });
+  },
+  [scanText]
 );
 ```
 
 Performance may also be better in production builds than in dev.
 
 ### Performance Tips:
+
 - **Higher `frameSkipThreshold`** = better performance, less CPU usage
 - **`useLightweightMode: true`** = faster processing, reduced memory usage
 - These optimizations are especially beneficial on Android devices
@@ -301,10 +314,10 @@ console.log(result);
 > ⚠️ **Note (iOS only):**  
 > The `orientation` option is available only on iOS and is recommended when using photos captured via the camera.
 
-| Property | Type | Values | Required | Default | Platform |
-|:----------|:------|:--------|:----------|:----------|:-----------|
-| `uri` | `string` | — | ✅ Yes | — | Android, iOS |
-| `orientation` | `string` | `portrait`, `portraitUpsideDown`, `landscapeLeft`, `landscapeRight` | ❌ No | `portrait` | iOS only |
+| Property      | Type     | Values                                                              | Required | Default    | Platform     |
+| :------------ | :------- | :------------------------------------------------------------------ | :------- | :--------- | :----------- |
+| `uri`         | `string` | —                                                                   | ✅ Yes   | —          | Android, iOS |
+| `orientation` | `string` | `portrait`, `portraitUpsideDown`, `landscapeLeft`, `landscapeRight` | ❌ No    | `portrait` | iOS only     |
 
 ---
 
@@ -320,21 +333,21 @@ await RemoveLanguageModel('en');
 
 ## 🌍 Supported Languages
 
-| Language | Code | Flag |
-|:----------|:------|:------|
-| Afrikaans | `af` | 🇿🇦 |
-| Arabic | `ar` | 🇸🇦 |
-| Bengali | `bn` | 🇧🇩 |
-| Chinese | `zh` | 🇨🇳 |
-| English | `en` | 🇺🇸🇬🇧 |
-| French | `fr` | 🇫🇷 |
-| German | `de` | 🇩🇪 |
-| Hindi | `hi` | 🇮🇳 |
-| Japanese | `ja` | 🇯🇵 |
-| Korean | `ko` | 🇰🇷 |
-| Portuguese | `pt` | 🇵🇹 |
-| Russian | `ru` | 🇷🇺 |
-| Spanish | `es` | 🇪🇸 |
+| Language                                                                                                                  | Code | Flag |
+| :------------------------------------------------------------------------------------------------------------------------ | :--- | :--- |
+| Afrikaans                                                                                                                 | `af` | 🇿🇦   |
+| Arabic                                                                                                                    | `ar` | 🇸🇦   |
+| Bengali                                                                                                                   | `bn` | 🇧🇩   |
+| Chinese                                                                                                                   | `zh` | 🇨🇳   |
+| English                                                                                                                   | `en` | 🇺🇸🇬🇧 |
+| French                                                                                                                    | `fr` | 🇫🇷   |
+| German                                                                                                                    | `de` | 🇩🇪   |
+| Hindi                                                                                                                     | `hi` | 🇮🇳   |
+| Japanese                                                                                                                  | `ja` | 🇯🇵   |
+| Korean                                                                                                                    | `ko` | 🇰🇷   |
+| Portuguese                                                                                                                | `pt` | 🇵🇹   |
+| Russian                                                                                                                   | `ru` | 🇷🇺   |
+| Spanish                                                                                                                   | `es` | 🇪🇸   |
 | ...and [many more](https://github.com/jamenamcinteer/react-native-vision-camera-ocr-plus/blob/next-release/src/types.ts). |
 
 ---
