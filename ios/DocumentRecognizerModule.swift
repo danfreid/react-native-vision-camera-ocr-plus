@@ -117,9 +117,16 @@ class DocumentRecognizerModule: NSObject {
             rows.append(currentRow.sorted { $0.bounds.minX < $1.bounds.minX })
         }
         
+        guard rows.count > 1 else {
+            return ["tables": [], "rawText": rawText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines), "cellConfidences": []]
+        }
+        
+        // Merge multi-line headers and align columns
+        rows = mergeHeadersAndAlignColumns(rows: rows, rowThreshold: rowThreshold)
+        
         let maxColumns = rows.map { $0.count }.max() ?? 0
         
-        guard maxColumns > 1 && rows.count > 1 else {
+        guard maxColumns > 1 else {
             return ["tables": [], "rawText": rawText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines), "cellConfidences": []]
         }
         
@@ -215,7 +222,106 @@ class DocumentRecognizerModule: NSObject {
                             var matchedCell = cell
                             matchedCell["searchTerm"] = searchTerm
                             matchedCell["tableIndex"] = tableIdx
-                            matchedCell["textBoundingBox"] = cell["boundingBox"]
+                            matchedCells.append(matchedCell)
+                        }
+                    }
+                }
+            }
+        }
+        
+        return matchedCells
+    }
+    
+    private func mergeHeadersAndAlignColumns(rows: [[(text: String, bounds: CGRect, confidence: Float)]], rowThreshold: CGFloat) -> [[(text: String, bounds: CGRect, confidence: Float)]] {
+        guard rows.count > 2 else { return rows }
+        
+        // Detect header rows (typically first few rows with many small cells)
+        var headerEndIdx = 0
+        let avgRowSize = rows.map { $0.count }.reduce(0, +) / rows.count
+        
+        for (idx, row) in rows.prefix(5).enumerated() {
+            if row.count > avgRowSize * 1.2 {
+                headerEndIdx = idx
+            } else {
+                break
+            }
+        }
+        
+        if headerEndIdx == 0 { return rows }
+        
+        // Merge header rows by column position
+        let headerRows = Array(rows[0...headerEndIdx])
+        let dataRows = Array(rows[(headerEndIdx + 1)...])
+        
+        // Determine column boundaries from all rows
+        var allXPositions: [CGFloat] = []
+        for row in rows {
+            for item in row {
+                allXPositions.append(item.bounds.minX)
+            }
+        }
+        allXPositions.sort()
+        
+        // Cluster X positions to find column boundaries
+        var columnBoundaries: [CGFloat] = []
+        var lastX: CGFloat = -1000
+        let xThreshold: CGFloat = 20
+        
+        for x in allXPositions {
+            if abs(x - lastX) > xThreshold {
+                columnBoundaries.append(x)
+                lastX = x
+            }
+        }
+        
+        // Merge header cells by column
+        var mergedHeader: [(text: String, bounds: CGRect, confidence: Float)] = []
+        for colBoundary in columnBoundaries {
+            var cellsInColumn: [(text: String, bounds: CGRect, confidence: Float)] = []
+            
+            for headerRow in headerRows {
+                for item in headerRow {
+                    if abs(item.bounds.minX - colBoundary) < xThreshold {
+                        cellsInColumn.append(item)
+                    }
+                }
+            }
+            
+            if !cellsInColumn.isEmpty {
+                let mergedText = cellsInColumn.map { $0.text }.joined(separator: " ")
+                let mergedBounds = cellsInColumn.reduce(cellsInColumn[0].bounds) { $0.union($1.bounds) }
+                let avgConfidence = cellsInColumn.map { $0.confidence }.reduce(0, +) / Float(cellsInColumn.count)
+                mergedHeader.append((text: mergedText, bounds: mergedBounds, confidence: avgConfidence))
+            }
+        }
+        
+        // Align data rows to column boundaries
+        var alignedDataRows: [[(text: String, bounds: CGRect, confidence: Float)]] = []
+        for dataRow in dataRows {
+            var alignedRow: [(text: String, bounds: CGRect, confidence: Float)] = []
+            
+            for colBoundary in columnBoundaries {
+                var found = false
+                for item in dataRow {
+                    if abs(item.bounds.minX - colBoundary) < xThreshold * 2 {
+                        alignedRow.append(item)
+                        found = true
+                        break
+                    }
+                }
+                if !found {
+                    // Empty cell
+                    let emptyBounds = CGRect(x: colBoundary, y: dataRow.first?.bounds.minY ?? 0, width: 10, height: dataRow.first?.bounds.height ?? 10)
+                    alignedRow.append((text: "", bounds: emptyBounds, confidence: 0.0))
+                }
+            }
+            
+            alignedDataRows.append(alignedRow)
+        }
+        
+        return [mergedHeader] + alignedDataRows
+    }
+}ox"] = cell["boundingBox"]
                             matchedCell["expandedBoundingBox"] = cell["boundingBox"]
                             matchedCells.append(matchedCell)
                         }
