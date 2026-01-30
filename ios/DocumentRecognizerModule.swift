@@ -121,7 +121,6 @@ class DocumentRecognizerModule: NSObject {
             return ["tables": [], "rawText": rawText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines), "cellConfidences": []]
         }
         
-        // Merge multi-line headers and align columns
         rows = mergeHeadersAndAlignColumns(rows: rows, rowThreshold: rowThreshold)
         
         let maxColumns = rows.map { $0.count }.max() ?? 0
@@ -222,6 +221,8 @@ class DocumentRecognizerModule: NSObject {
                             var matchedCell = cell
                             matchedCell["searchTerm"] = searchTerm
                             matchedCell["tableIndex"] = tableIdx
+                            matchedCell["textBoundingBox"] = cell["boundingBox"]
+                            matchedCell["expandedBoundingBox"] = cell["boundingBox"]
                             matchedCells.append(matchedCell)
                         }
                     }
@@ -235,12 +236,11 @@ class DocumentRecognizerModule: NSObject {
     private func mergeHeadersAndAlignColumns(rows: [[(text: String, bounds: CGRect, confidence: Float)]], rowThreshold: CGFloat) -> [[(text: String, bounds: CGRect, confidence: Float)]] {
         guard rows.count > 2 else { return rows }
         
-        // Detect header rows (typically first few rows with many small cells)
         var headerEndIdx = 0
-        let avgRowSize = rows.map { $0.count }.reduce(0, +) / rows.count
+        let avgRowSize = Double(rows.map { $0.count }.reduce(0, +)) / Double(rows.count)
         
         for (idx, row) in rows.prefix(5).enumerated() {
-            if row.count > avgRowSize * 1.2 {
+            if Double(row.count) > avgRowSize * 1.2 {
                 headerEndIdx = idx
             } else {
                 break
@@ -249,11 +249,9 @@ class DocumentRecognizerModule: NSObject {
         
         if headerEndIdx == 0 { return rows }
         
-        // Merge header rows by column position
         let headerRows = Array(rows[0...headerEndIdx])
         let dataRows = Array(rows[(headerEndIdx + 1)...])
         
-        // Determine column boundaries from all rows
         var allXPositions: [CGFloat] = []
         for row in rows {
             for item in row {
@@ -262,7 +260,6 @@ class DocumentRecognizerModule: NSObject {
         }
         allXPositions.sort()
         
-        // Cluster X positions to find column boundaries
         var columnBoundaries: [CGFloat] = []
         var lastX: CGFloat = -1000
         let xThreshold: CGFloat = 20
@@ -274,7 +271,6 @@ class DocumentRecognizerModule: NSObject {
             }
         }
         
-        // Merge header cells by column
         var mergedHeader: [(text: String, bounds: CGRect, confidence: Float)] = []
         for colBoundary in columnBoundaries {
             var cellsInColumn: [(text: String, bounds: CGRect, confidence: Float)] = []
@@ -295,7 +291,6 @@ class DocumentRecognizerModule: NSObject {
             }
         }
         
-        // Align data rows to column boundaries
         var alignedDataRows: [[(text: String, bounds: CGRect, confidence: Float)]] = []
         for dataRow in dataRows {
             var alignedRow: [(text: String, bounds: CGRect, confidence: Float)] = []
@@ -310,7 +305,6 @@ class DocumentRecognizerModule: NSObject {
                     }
                 }
                 if !found {
-                    // Empty cell
                     let emptyBounds = CGRect(x: colBoundary, y: dataRow.first?.bounds.minY ?? 0, width: 10, height: dataRow.first?.bounds.height ?? 10)
                     alignedRow.append((text: "", bounds: emptyBounds, confidence: 0.0))
                 }
@@ -320,16 +314,5 @@ class DocumentRecognizerModule: NSObject {
         }
         
         return [mergedHeader] + alignedDataRows
-    }
-}ox"] = cell["boundingBox"]
-                            matchedCell["expandedBoundingBox"] = cell["boundingBox"]
-                            matchedCells.append(matchedCell)
-                        }
-                    }
-                }
-            }
-        }
-        
-        return matchedCells
     }
 }
