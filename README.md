@@ -1,5 +1,16 @@
 # DFR
 
+yarn global add eas-cli@latest
+yarn add --dev @expo/cli@latest eas-cli@latest
+yarn
+yarn prepare
+cd example
+yarn
+npx expo prebuild --clean
+eas build --platform ios --profile production --auto-submit
+
+# DFR
+
 # 📷 react-native-vision-camera-ocr-plus
 
 [![CI Status](https://github.com/jamenamcinteer/react-native-vision-camera-ocr-plus/actions/workflows/ci.yml/badge.svg)](https://github.com/jamenamcinteer/react-native-vision-camera-ocr-plus/actions/workflows/ci.yml)

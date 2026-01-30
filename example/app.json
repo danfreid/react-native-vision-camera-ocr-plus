@@ -15,17 +15,20 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "Allow $(PRODUCT_NAME) to access your camera"
+        "NSCameraUsageDescription": "Allow $(PRODUCT_NAME) to access your camera",
+        "NSLocationWhenInUseUsageDescription": "Allow $(PRODUCT_NAME) to access your location for geotagging photos",
+        "ITSAppUsesNonExemptEncryption": false
       },
-      "bundleIdentifier": "com.visionocr.example"
+      "bundleIdentifier": "com.dfrvisionocr.example"
     },
     "android": {
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
-        "android.permission.CAMERA"
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ],
-      "package": "com.visionocr.example"
+      "package": "com.dfrvisionocr.example"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -33,6 +36,11 @@
     "plugins": [
       "react-native-vision-camera",
       "expo-image-picker"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "90760f30-4af3-41ef-8436-8680c1fedb69"
+      }
+    }
   }
 }

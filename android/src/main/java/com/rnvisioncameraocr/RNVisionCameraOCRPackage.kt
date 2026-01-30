@@ -25,7 +25,8 @@ class RNVisionCameraOCRPackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
             return listOf(
                  RemoveLanguageModel(reactContext),
-                 PhotoRecognizerModule(reactContext)
+                 PhotoRecognizerModule(reactContext),
+                 DocumentRecognizerModule(reactContext)
              )
     }
 }

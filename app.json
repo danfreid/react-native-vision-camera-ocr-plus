@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "2e8f46ca-0cea-46c7-a632-4aee01728ad2"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.dreid5550.reactnativevisioncameraocrplusllm",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    }
+  }
+}

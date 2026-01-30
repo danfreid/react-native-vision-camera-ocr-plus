@@ -13,8 +13,13 @@ class PhotoRecognizerModule: NSObject {
     private let textRecognizer = TextRecognizer.textRecognizer(options:options)
     private var data: [String: Any] = [:]
 
+    @objc
+    static func requiresMainQueueSetup() -> Bool {
+        return false
+    }
+
     @objc(process:orientation:withResolver:withRejecter:)
-    private func process(uri: String,orientation:String, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+    func process(_ uri: String, orientation: String, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
             let image =  UIImage(contentsOfFile: uri)
             if image != nil {
                 do {

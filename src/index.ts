@@ -4,4 +4,24 @@ export { RemoveLanguageModel } from './RemoveLanguageModel';
 
 export { PhotoRecognizer } from './PhotoRecognizer';
 
+export {
+  DocumentRecognizer,
+  formatTableAsText,
+  formatTableAsCSV,
+  formatTableAsQuotedCSV,
+  formatTableWithConfidences,
+} from './DocumentRecognizer';
+export type {
+  BoundingBox,
+  TableCell,
+  TableColumn,
+  DetectedTable,
+  DocumentRecognitionResult,
+  DocumentRecognizerOptions,
+  MatchedCell,
+  DataCell,
+  ColumnData,
+  CellConfidence,
+} from './DocumentRecognizer';
+
 export * from './types';

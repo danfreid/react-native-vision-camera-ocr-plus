@@ -49,11 +49,6 @@ RCT_EXTERN_METHOD(remove:(NSString *)code
                  withResolver:(RCTPromiseResolveBlock)resolve
                  withRejecter:(RCTPromiseRejectBlock)reject)
 
-+ (BOOL)requiresMainQueueSetup
-{
-  return NO;
-}
-
 @end
 
 @interface RCT_EXTERN_MODULE(PhotoRecognizerModule, NSObject)
@@ -63,10 +58,13 @@ RCT_EXTERN_METHOD(process:(NSString *)uri
                   withResolver:(RCTPromiseResolveBlock)resolve
                   withRejecter:(RCTPromiseRejectBlock)reject)
 
+@end
 
-+ (BOOL)requiresMainQueueSetup
-{
-  return NO;
-}
+@interface RCT_EXTERN_MODULE(DocumentRecognizerModule, NSObject)
+
+RCT_EXTERN_METHOD(process:(NSString *)uri
+                  searchTerms:(NSArray *)searchTerms
+                  withResolver:(RCTPromiseResolveBlock)resolve
+                  withRejecter:(RCTPromiseRejectBlock)reject)
 
 @end
