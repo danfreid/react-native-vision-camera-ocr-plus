@@ -17,55 +17,7 @@ import {
   type EnhancedTableResult,
 } from 'react-native-vision-camera-ocr';
 
-const FLIGHT_LOG_CONTEXT = `
-Flight logbook table with dual-page spread:
-
-LEFT PAGE COLUMNS (in order):
-1. DATE - Format: M/D (combine with year from header)
-2. AIRCRAFT MAKE AND MODEL - Aircraft type codes (C172, PA28, LR25, BE-200, IA1124, etc.)
-3. AIRCRAFT IDENT - Registration number (N-numbers)
-4. FROM-TO - Airport codes separated by hyphens (e.g., HOU-GLS-BPT)
-5. TOTAL DURATION OF FLIGHT - Decimal hours
-6. AIRPLANE SINGLE-ENGINE LAND - Hours
-7. AIRPLANE SINGLE-ENGINE SEA - Hours
-8. AIRPLANE MULTI-ENGINE LAND - Hours
-9. TURBOJET - Hours (for jet aircraft only)
-10. ROTORCRAFT HELICOPTER - Hours
-11. GLIDER - Hours
-12. TURBOPROP - Hours (for turboprop aircraft only)
-13. CUSTOM3 - Usually empty
-14. LANDINGS DAY - Integer count
-15. LANDINGS NIGHT - Integer count
-
-RIGHT PAGE COLUMNS (in order):
-1. NIGHT - Night flight hours
-2. ACTUAL INSTRUMENT - Actual IMC hours
-3. SIMULATED INSTRUMENT (HOOD) - Simulated instrument hours
-4. APPROACHES NO. - Number of approaches
-5. APPROACHES TYPE - Approach types (ILS, VOR, GPS, etc.)
-6. FLIGHT SIMULATOR - Simulator hours
-7. CROSS COUNTRY - Cross-country hours
-8. SOLO - Solo hours
-9. PILOT IN COMMAND - PIC hours
-10. SECOND IN COMMAND - SIC hours
-11. DUAL RECEIVED - Instruction received hours
-12. AS FLIGHT INSTRUCTOR - CFI hours
-13. REMARKS AND ENDORSEMENTS - Notes (max 25 chars)
-
-CRITICAL RULES:
-1. Slashed zeros (Ø, ø, ⌀) should be interpreted as 0, not 6
-2. Decimal format: "2|8" means 2.8 hours, "|6" means 0.6 hours
-3. Empty cells should remain empty (don't shift values from adjacent columns)
-4. Aircraft code corrections: LB25→LR25, BE-Z-O→BE-200, IAILY→IA1124
-5. Total Duration must equal sum of aircraft category columns
-6. Distinguish between: 0/O, 1/I, 8/B, 5/S, Q/0
-
-VALIDATION:
-- Each row represents one flight
-- PIC + SIC + Dual + CFI + Solo should equal Total Duration
-- Day landings + Night landings should match approach count
-- Cross-country flights typically have longer durations
-`;
+const FLIGHT_LOG_CONTEXT = `Flight logbook with aircraft info (left) and flight times (right). Fix OCR errors: Ø→0, LB25→LR25, BE-Z-O→BE-200, 2|8→2.8`;
 
 export default function EnhancedFlightLogExtractor() {
   const [isInitialized, setIsInitialized] = useState(false);

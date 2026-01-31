@@ -119,14 +119,11 @@ class DocumentRecognizerWithLLM: NSObject {
                 // Step 3: Combine and align tables
                 let combinedCSV = combineTablesWithLLM(left: leftTable, right: rightTable)
                 
-                // Step 4: Use LLM to correct errors in the CSV
-                let correctedCSV = try await correctCSVWithLLM(csv: combinedCSV, context: contextPrompt)
-                
-                // Step 5: Calculate totals if requested
-                let calculations = try await calculateTotals(csv: correctedCSV, context: contextPrompt)
+                // Step 4: Calculate totals (skip CSV correction to avoid context window issues)
+                let calculations = try await calculateTotals(csv: combinedCSV, context: contextPrompt)
                 
                 resolve([
-                    "csv": correctedCSV,
+                    "csv": combinedCSV,
                     "leftTable": serializeTable(leftTable),
                     "rightTable": serializeTable(rightTable),
                     "calculations": calculations,
@@ -422,7 +419,7 @@ class DocumentRecognizerWithLLM: NSObject {
             // Replace the sample rows with corrected ones
             let remainingLines = Array(lines.dropFirst(25)) // Rows after the sample
             let correctedLines = correctedSample.split(separator: "\n").map { String($0) }
-            let finalLines = headerLines.map { String($0) } + correctedLines + remainingLines.map { String($0) }
+            let finalLines = Array(headerLines.map { String($0) }) + correctedLines + Array(remainingLines.map { String($0) })
             let correctedCSV = finalLines.joined(separator: "\n")
             
             return correctedCSV
