@@ -26,3 +26,16 @@ export type {
 } from './DocumentRecognizer';
 
 export * from './types';
+
+// Enhanced LLM-based table extraction (iOS 26+)
+export {
+  initializeLLM,
+  processTableWithLLM,
+  isLLMAvailable,
+} from './DocumentRecognizerWithLLM';
+export type {
+  TableCell as LLMTableCell,
+  TableStructure,
+  FlightCalculations,
+  EnhancedTableResult,
+} from './DocumentRecognizerWithLLM';

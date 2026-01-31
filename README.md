@@ -1,4 +1,5 @@
 # DFR
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 yarn global add eas-cli@latest
 yarn add --dev @expo/cli@latest eas-cli@latest
@@ -41,10 +42,44 @@ This fork provides:
 
 - ✅ Ongoing maintenance and compatibility with **React Native 0.76+** and **Vision Camera v4+**
 - 🧠 **Translation support** (not just OCR) powered by ML Kit
+- 🤖 **NEW: Enhanced table extraction** with Apple Foundation Models (iOS 26+)
 - 🛠 **Improved stability and error handling**
 - 🚀 **Faster processing** and frame optimization
 - 📦 **TypeScript definitions** included
 - 🧩 Consistent API that works seamlessly with modern React Native projects
+
+---
+
+## 🆕 Enhanced Table Extraction (iOS 26+)
+
+Leverage Apple's on-device Foundation Models for superior tabular data extraction:
+
+- **Spatial Understanding**: Accurately identifies rows, columns, and cells
+- **Error Correction**: Fixes common OCR mistakes in handwritten text
+- **Context-Aware**: Uses your domain knowledge for better accuracy
+- **Automatic Calculations**: Computes totals and validates data
+- **100% On-Device**: Privacy-first, works offline
+
+Perfect for extracting data from flight logbooks, medical forms, inspection checklists, and more!
+
+```typescript
+import { initializeLLM, processTableWithLLM } from 'react-native-vision-camera-ocr';
+
+// Initialize once
+await initializeLLM();
+
+// Process dual-page table
+const result = await processTableWithLLM(
+  leftImageUri,
+  rightImageUri,
+  'Flight logbook with columns: Date, Aircraft, Duration, etc.'
+);
+
+console.log('CSV:', result.csv);
+console.log('Total hours:', result.calculations.totalHours);
+```
+
+📖 [Full Documentation](./docs/FOUNDATION_MODELS_INTEGRATION.md) | [Enhanced Extraction Guide](./docs/ENHANCED_TABLE_EXTRACTION.md)
 
 ---
 
