@@ -198,59 +198,48 @@ class DocumentRecognizerModule: NSObject {
     private func mergeHeaders(rows: [[(text: String, bounds: CGRect)]]) -> [[(text: String, bounds: CGRect)]] {
         guard rows.count > 2 else { return rows }
         
-        let avgRowSize = Double(rows.map { $0.count }.reduce(0, +)) / Double(rows.count)
-        var headerEndIdx = 0
+        // Left page: DATE -> LNDGS NIGHT (25 columns)
+        let leftHeaders = [
+            "DATE", "AIRCRAFT MAKE AND MODEL", "AIRCRAFT IDENT", "FROM", "TO",
+            "TOTAL DURATION OF FLIGHT", "", "AIRPLANE SINGLE- ENGINE LAND", "", "AIRPLANE SINGLE- ENGINE SEA",
+            "", "AIRPLANE MULTI- ENGINE LAND", "", "NEBASET", "", "ROTORCRAFT HELICOPTER",
+            "", "GLIDER", "", "TURBOPROP", "", "", "", "D A Y", "N I G H T"
+        ]
         
-        for (idx, row) in rows.prefix(8).enumerated() {
-            if Double(row.count) > avgRowSize * 1.1 {
-                headerEndIdx = idx
-            } else {
-                break
-            }
-        }
+        // Right page: NIGHT -> REMARKS (23 columns)
+        let rightHeaders = [
+            "NIGHT", "", "ACTUAL INSTRUMENT", "", "SIMULATED INSTRUMENT (HOOD)", "",
+            "APP NO.", "TYPE", "FLIGHT SIMULATOR", "", "CROSS COUNTRY", "", "SOLO",
+            "", "PILOT IN COMMAND", "", "SECOND IN COMMAND", "", "DUAL RECEIVED",
+            "", "AS FLIGHT INSTRUCTOR", "", "REMARKS AND ENDORSEMENTS"
+        ]
         
-        if headerEndIdx == 0 { return rows }
-        
-        let headerRows = Array(rows[0...headerEndIdx])
-        let dataRows = Array(rows[(headerEndIdx + 1)...])
-        
-        var allX: [CGFloat] = []
-        for row in dataRows.prefix(5) {
+        // Get column positions from data rows
+        let dataRows = Array(rows.dropFirst(10).prefix(3))
+        var colPositions: [CGFloat] = []
+        for row in dataRows {
             for item in row {
-                allX.append(item.bounds.minX)
-            }
-        }
-        allX.sort()
-        
-        var colBoundaries: [CGFloat] = []
-        var lastX: CGFloat = -1000
-        let xThreshold: CGFloat = 15
-        
-        for x in allX {
-            if abs(x - lastX) > xThreshold {
-                colBoundaries.append(x)
-                lastX = x
-            }
-        }
-        
-        var mergedHeader: [(text: String, bounds: CGRect)] = []
-        for colX in colBoundaries {
-            var cells: [(text: String, bounds: CGRect)] = []
-            for headerRow in headerRows {
-                for item in headerRow {
-                    if abs(item.bounds.minX - colX) < xThreshold * 1.5 {
-                        cells.append(item)
-                    }
+                let x = item.bounds.minX
+                if !colPositions.contains(where: { abs($0 - x) < 15 }) {
+                    colPositions.append(x)
                 }
             }
-            if !cells.isEmpty {
-                let text = cells.map { $0.text }.joined(separator: " ")
-                let bounds = cells.reduce(cells[0].bounds) { $0.union($1.bounds) }
-                mergedHeader.append((text: text, bounds: bounds))
-            }
+        }
+        colPositions.sort()
+        
+        // Detect page by column count
+        let headers = colPositions.count == 25 ? leftHeaders : rightHeaders
+        
+        // Build header row
+        var mergedHeader: [(text: String, bounds: CGRect)] = []
+        let headerY = rows[0][0].bounds.minY
+        for (idx, colX) in colPositions.enumerated() {
+            let headerText = idx < headers.count ? headers[idx] : ""
+            let bounds = CGRect(x: colX, y: headerY, width: 50, height: 20)
+            mergedHeader.append((text: headerText, bounds: bounds))
         }
         
-        return [mergedHeader] + dataRows
+        return [mergedHeader] + Array(rows.dropFirst(10))
     }
     
     private func alignColumns(rows: [[(text: String, bounds: CGRect)]]) -> [[String]] {

@@ -10,6 +10,7 @@ import {
   StyleSheet,
   Text,
   View,
+  TouchableOpacity,
 } from 'react-native';
 import {
   Camera,
@@ -60,7 +61,7 @@ export default function App() {
 
   React.useEffect(() => {
     const processImage = async () => {
-      if (!image) return;
+      if (!image || image === 'dual-picker') return;
       
       setIsProcessing(true);
       setImageText('');
@@ -74,71 +75,18 @@ export default function App() {
             orientation: 'portrait',
           });
           setImageText(result.resultText || '');
-        } else {
+        } else if (modalMode === 'document') {
           const result = await DocumentRecognizer({ uri: image });
           
-          // Build detailed log string
           let logOutput = `=== DocumentRecognizer Result ===\n`;
           logOutput += `Tables found: ${result.tables.length}\n`;
           
           result.tables.forEach((table, tIdx) => {
             logOutput += `\n--- Table ${tIdx + 1} ---\n`;
-            logOutput += `Table boundingBox: ${JSON.stringify(table.boundingBox)}\n`;
             logOutput += `Rows: ${table.rowCount}, Columns: ${table.columnCount}\n`;
-            
-            table.columns.forEach((col, cIdx) => {
-              logOutput += `\n  Column ${cIdx}:\n`;
-              logOutput += `  Column boundingBox: ${JSON.stringify(col.boundingBox)}\n`;
-              
-              col.cells.forEach((cell) => {
-                const confStr = cell.confidence !== undefined ? ` (${(cell.confidence * 100).toFixed(2)}%)` : '';
-                logOutput += `    Cell [${cell.rowIndex},${cell.columnIndex}]: "${cell.text}"${confStr}\n`;
-                logOutput += `    Cell boundingBox: ${JSON.stringify(cell.boundingBox)}\n`;
-              });
-            });
           });
           
-          // Add cell confidences section (iOS 26+)
-          if (result.cellConfidences && result.cellConfidences.length > 0) {
-            logOutput += `\n=== Cell Confidence Scores (iOS 26+) ===\n`;
-            result.cellConfidences.forEach((conf) => {
-              logOutput += `"'${(conf.confidence * 100).toFixed(8)}",`;
-            });
-            logOutput += `\n`;
-          }
-          
-          // Add matched cells section
-          if (result.matchedCells && result.matchedCells.length > 0) {
-            logOutput += `\n=== Matched Cells ===\n`;
-            result.matchedCells.forEach((match) => {
-              logOutput += `\nSearch: "${match.searchTerm}"\n`;
-              logOutput += `  Found: "${match.text}"\n`;
-              logOutput += `  Confidence: ${(match.confidence * 100).toFixed(1)}%\n`;
-              logOutput += `  Cell: ${match.cellRange} (Row: ${match.rowIndex}, Col: ${match.columnIndex})\n`;
-              logOutput += `  Column: ${match.columnRange}\n`;
-              logOutput += `  Text BoundingBox: ${JSON.stringify(match.textBoundingBox)}\n`;
-              logOutput += `  Expanded BoundingBox: ${JSON.stringify(match.expandedBoundingBox)}\n`;
-            });
-          }
-          
-          // Add column data section
-          if (result.columnData && result.columnData.length > 0) {
-            logOutput += `\n=== Column Data ===\n`;
-            result.columnData.forEach((col) => {
-              logOutput += `\nColumn ${col.columnRange} - "${col.headerText}" (matched: "${col.searchTerm}")\n`;
-              logOutput += `  Header BoundingBox: ${JSON.stringify(col.headerBoundingBox)}\n`;
-              logOutput += `  Data cells (${col.cells.length}):\n`;
-              col.cells.forEach((cell) => {
-                const emptyTag = cell.isEmpty ? ' [EMPTY]' : '';
-                const confStr = cell.confidence !== null ? ` (${(cell.confidence * 100).toFixed(1)}%)` : '';
-                logOutput += `    ${cell.cellRange}: "${cell.value}"${emptyTag}${confStr}\n`;
-                logOutput += `      BoundingBox: ${JSON.stringify(cell.boundingBox)}\n`;
-              });
-            });
-          }
-          
           logOutput += `\nRaw text: ${result.rawText}\n`;
-          logOutput += `=================================`;
           
           setDetectedTables(result.tables);
           setCellConfidences(result.cellConfidences || []);
@@ -177,57 +125,57 @@ export default function App() {
     [scanText, onText]
   );
 
-  const pickDualImages = async () => {
-    const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permissionResult.granted) {
-      Alert.alert('Permission required', 'Permission to access the media library is required.');
+  const pickDualImages = () => {
+    setModalMode('dual');
+    setImage('dual-picker');
+    setLeftImage(null);
+    setRightImage(null);
+    setImageText('');
+  };
+
+  const pickLeftImage = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: false,
+      quality: 1,
+    });
+    if (!result.canceled) {
+      setLeftImage(result.assets[0].uri);
+    }
+  };
+
+  const pickRightImage = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: false,
+      quality: 1,
+    });
+    if (!result.canceled) {
+      setRightImage(result.assets[0].uri);
+    }
+  };
+
+  const processDualImages = async () => {
+    if (!leftImage || !rightImage) {
+      Alert.alert('Error', 'Please select both left and right images');
       return;
     }
 
-    const leftResult = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: false,
-      quality: 1,
-    });
+    setIsProcessing(true);
+    setImageText('');
 
-    if (leftResult.canceled) return;
-
-    const rightResult = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: false,
-      quality: 1,
-    });
-
-    if (rightResult.canceled) return;
-
-    setLeftImage(leftResult.assets[0].uri);
-    setRightImage(rightResult.assets[0].uri);
-    setModalMode('dual');
-    setImage('dual');
+    try {
+      const result = await DualImageRecognizer({
+        leftUri: leftImage,
+        rightUri: rightImage,
+      });
+      setImageText(result.csv);
+    } catch (error) {
+      Alert.alert('Error processing images', (error as Error).message);
+    } finally {
+      setIsProcessing(false);
+    }
   };
-
-  React.useEffect(() => {
-    const processDualImages = async () => {
-      if (!leftImage || !rightImage) return;
-      
-      setIsProcessing(true);
-      setImageText('');
-
-      try {
-        const result = await DualImageRecognizer({
-          leftUri: leftImage,
-          rightUri: rightImage,
-        });
-        setImageText(result.csv);
-      } catch (error) {
-        Alert.alert('Error processing images', (error as Error).message);
-      } finally {
-        setIsProcessing(false);
-      }
-    };
-
-    processDualImages();
-  }, [leftImage, rightImage]);
 
   const pickImage = async (mode: 'photo' | 'document') => {
     const permissionResult =
@@ -270,7 +218,6 @@ export default function App() {
   const shareTableAsCSV = async () => {
     if (detectedTables.length === 0) return;
     
-    // Use quoted CSV format with "'" prefix and include confidence scores
     const csvContent = detectedTables.map((table, idx) => {
       return `# Table ${idx + 1}\n${formatTableWithConfidences(table, cellConfidences, "'")}`;
     }).join('\n\n');
@@ -329,7 +276,7 @@ export default function App() {
       
       <Modal visible={!!image} animationType="slide">
         <View style={styles.modalContainer}>
-          {image && (
+          {image && image !== 'dual-picker' && (
             <Image
               source={{ uri: image }}
               style={styles.image}
@@ -340,17 +287,57 @@ export default function App() {
           <ScrollView style={styles.resultsContainer}>
             {isProcessing ? (
               <View style={styles.processingContainer}>
-                <Text style={styles.processingText}>Processing image...</Text>
+                <Text style={styles.processingText}>Processing...</Text>
               </View>
             ) : modalMode === 'dual' ? (
-              <View style={styles.overlay}>
-                <Text style={styles.title}>Combined CSV:</Text>
-                <ScrollView horizontal>
-                  <Text style={styles.line}>{imageText}</Text>
-                </ScrollView>
+              <View style={styles.dualImagePicker}>
+                <Text style={styles.dualTitle}>Select Left and Right Pages</Text>
+                
+                <View style={styles.dualImageRow}>
+                  <View style={styles.dualImageSection}>
+                    <Text style={styles.dualImageLabel}>📖 Left Page</Text>
+                    {leftImage ? (
+                      <Image source={{ uri: leftImage }} style={styles.dualImageThumb} />
+                    ) : (
+                      <View style={styles.dualImagePlaceholder}>
+                        <Text style={styles.dualImagePlaceholderText}>No image</Text>
+                      </View>
+                    )}
+                    <TouchableOpacity style={styles.pickButton} onPress={pickLeftImage}>
+                      <Text style={styles.pickButtonText}>Pick Left</Text>
+                    </TouchableOpacity>
+                  </View>
+                  
+                  <View style={styles.dualImageSection}>
+                    <Text style={styles.dualImageLabel}>📖 Right Page</Text>
+                    {rightImage ? (
+                      <Image source={{ uri: rightImage }} style={styles.dualImageThumb} />
+                    ) : (
+                      <View style={styles.dualImagePlaceholder}>
+                        <Text style={styles.dualImagePlaceholderText}>No image</Text>
+                      </View>
+                    )}
+                    <TouchableOpacity style={styles.pickButton} onPress={pickRightImage}>
+                      <Text style={styles.pickButtonText}>Pick Right</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                
+                {leftImage && rightImage && (
+                  <TouchableOpacity style={styles.processButton} onPress={processDualImages}>
+                    <Text style={styles.processButtonText}>🔄 Process Images</Text>
+                  </TouchableOpacity>
+                )}
+                
                 {imageText && (
-                  <View style={styles.shareButtons}>
-                    <Button title="Share CSV" onPress={shareTableAsText} />
+                  <View style={styles.csvResult}>
+                    <Text style={styles.csvTitle}>Combined CSV:</Text>
+                    <ScrollView horizontal style={styles.csvScroll}>
+                      <Text style={styles.csvText}>{imageText}</Text>
+                    </ScrollView>
+                    <TouchableOpacity style={styles.shareButton} onPress={shareTableAsText}>
+                      <Text style={styles.shareButtonText}>📤 Share CSV</Text>
+                    </TouchableOpacity>
                   </View>
                 )}
               </View>
@@ -378,13 +365,6 @@ export default function App() {
                     <Button title="Share as Text" onPress={shareTableAsText} />
                     <View style={styles.buttonSpacer} />
                     <Button title="Share as CSV" onPress={shareTableAsCSV} />
-                  </View>
-                )}
-                
-                {imageText && (
-                  <View style={styles.rawTextContainer}>
-                    <Text style={styles.rawTextTitle}>Raw Text:</Text>
-                    <Text style={styles.rawText}>{imageText}</Text>
                   </View>
                 )}
               </View>
@@ -470,24 +450,111 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginVertical: 16,
   },
-  rawTextContainer: {
-    marginTop: 16,
-    padding: 12,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 8,
-  },
-  rawTextTitle: {
-    color: '#888',
-    fontSize: 12,
-    marginBottom: 4,
-  },
-  rawText: {
-    color: '#ccc',
-    fontSize: 12,
-  },
   closeButtonContainer: {
     position: 'absolute',
     top: 48,
     right: 16,
+  },
+  dualImagePicker: {
+    flex: 1,
+    padding: 16,
+  },
+  dualTitle: {
+    color: 'white',
+    fontSize: 20,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  dualImageRow: {
+    flexDirection: 'row',
+    gap: 16,
+    marginBottom: 24,
+  },
+  dualImageSection: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  dualImageLabel: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  dualImageThumb: {
+    width: '100%',
+    height: 150,
+    borderRadius: 8,
+    backgroundColor: '#2d2d44',
+    marginBottom: 12,
+  },
+  dualImagePlaceholder: {
+    width: '100%',
+    height: 150,
+    borderRadius: 8,
+    backgroundColor: '#2d2d44',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  dualImagePlaceholderText: {
+    color: '#666',
+    fontSize: 14,
+  },
+  pickButton: {
+    backgroundColor: '#4a90d9',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 8,
+    width: '100%',
+    alignItems: 'center',
+  },
+  pickButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  processButton: {
+    backgroundColor: '#4CAF50',
+    paddingVertical: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  processButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  csvResult: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 8,
+    padding: 16,
+  },
+  csvTitle: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  csvScroll: {
+    maxHeight: 200,
+    marginBottom: 16,
+  },
+  csvText: {
+    color: 'white',
+    fontFamily: 'monospace',
+    fontSize: 12,
+  },
+  shareButton: {
+    backgroundColor: '#FF9500',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  shareButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
