@@ -63,15 +63,125 @@ class DocumentRecognizerModule: NSObject {
             let csv = self.combineToCSV(leftRows: leftResult.rows, rightRows: rightResult.rows)
             let dateColumn = self.extractDateColumn(rawData: leftResult.rawData)
             
+            // Build comprehensive cell data with bounding boxes
+            let leftCellData = self.buildCellData(rawData: leftResult.rawData, side: "left")
+            let rightCellData = self.buildCellData(rawData: rightResult.rawData, side: "right")
+            
+            // Build detailed table structure
+            let leftTableStructure = self.buildTableStructure(rows: leftResult.rows, rawData: leftResult.rawData)
+            let rightTableStructure = self.buildTableStructure(rows: rightResult.rows, rawData: rightResult.rawData)
+            
             resolve([
                 "csv": csv,
                 "dateColumn": dateColumn,
                 "rectangles": [
                     "left": leftRectangles,
                     "right": rightRectangles
+                ],
+                "leftTable": leftTableStructure,
+                "rightTable": rightTableStructure,
+                "cellData": [
+                    "left": leftCellData,
+                    "right": rightCellData
+                ],
+                "metadata": [
+                    "leftRows": leftResult.rows.count,
+                    "leftColumns": leftResult.rows.first?.count ?? 0,
+                    "rightRows": rightResult.rows.count,
+                    "rightColumns": rightResult.rows.first?.count ?? 0,
+                    "totalCells": leftCellData.count + rightCellData.count,
+                    "processingDate": ISO8601DateFormatter().string(from: Date())
                 ]
             ])
         }
+    }
+    
+    private func buildCellData(rawData: [[(text: String, bounds: CGRect, confidence: Float)]], side: String) -> [[String: Any]] {
+        var cellData: [[String: Any]] = []
+        
+        for (rowIdx, row) in rawData.enumerated() {
+            for (colIdx, cell) in row.enumerated() {
+                cellData.append([
+                    "side": side,
+                    "row": rowIdx,
+                    "column": colIdx,
+                    "value": cell.text,
+                    "confidence": cell.confidence,
+                    "boundingBox": [
+                        "x": cell.bounds.origin.x,
+                        "y": cell.bounds.origin.y,
+                        "width": cell.bounds.width,
+                        "height": cell.bounds.height,
+                        "left": cell.bounds.minX,
+                        "top": cell.bounds.minY,
+                        "right": cell.bounds.maxX,
+                        "bottom": cell.bounds.maxY
+                    ]
+                ])
+            }
+        }
+        
+        return cellData
+    }
+    
+    private func buildTableStructure(rows: [[String]], rawData: [[(text: String, bounds: CGRect, confidence: Float)]]) -> [String: Any] {
+        let rowCount = rows.count
+        let columnCount = rows.first?.count ?? 0
+        
+        var columns: [[String: Any]] = []
+        for colIdx in 0..<columnCount {
+            var columnCells: [[String: Any]] = []
+            var columnBounds: CGRect?
+            
+            for (rowIdx, row) in rows.enumerated() {
+                if colIdx < row.count {
+                    let value = row[colIdx]
+                    
+                    // Find corresponding cell in rawData
+                    if rowIdx < rawData.count && colIdx < rawData[rowIdx].count {
+                        let cellData = rawData[rowIdx][colIdx]
+                        
+                        columnCells.append([
+                            "row": rowIdx,
+                            "column": colIdx,
+                            "value": value,
+                            "confidence": cellData.confidence,
+                            "boundingBox": [
+                                "x": cellData.bounds.origin.x,
+                                "y": cellData.bounds.origin.y,
+                                "width": cellData.bounds.width,
+                                "height": cellData.bounds.height
+                            ]
+                        ])
+                        
+                        if columnBounds == nil {
+                            columnBounds = cellData.bounds
+                        } else {
+                            columnBounds = columnBounds!.union(cellData.bounds)
+                        }
+                    }
+                }
+            }
+            
+            if let bounds = columnBounds {
+                columns.append([
+                    "columnIndex": colIdx,
+                    "cells": columnCells,
+                    "boundingBox": [
+                        "x": bounds.origin.x,
+                        "y": bounds.origin.y,
+                        "width": bounds.width,
+                        "height": bounds.height
+                    ]
+                ])
+            }
+        }
+        
+        return [
+            "rowCount": rowCount,
+            "columnCount": columnCount,
+            "columns": columns
+        ]
     }
     
     @objc(process:searchTerms:withResolver:withRejecter:)
@@ -424,9 +534,16 @@ class DocumentRecognizerModule: NSObject {
         var csv = ""
         let maxRows = max(leftRows.count, rightRows.count)
         
-        // Add metadata header
-        csv += "# Using DocumentRecognizerModule.processDualImages (iOS 26)\n"
-        csv += "# Left columns: \(leftRows.first?.count ?? 0), Right columns: \(rightRows.first?.count ?? 0)\n\n"
+        // Add comprehensive metadata header
+        csv += "# ========================================\n"
+        csv += "# Dual Table OCR Results\n"
+        csv += "# Using DocumentRecognizerModule.processDualImages\n"
+        csv += "# ========================================\n"
+        csv += "# Left page columns: \(leftRows.first?.count ?? 0)\n"
+        csv += "# Right page columns: \(rightRows.first?.count ?? 0)\n"
+        csv += "# Total rows: \(maxRows)\n"
+        csv += "# Processing date: \(Date())\n"
+        csv += "# ========================================\n\n"
         
         for i in 0..<maxRows {
             let leftCols = i < leftRows.count ? leftRows[i] : []

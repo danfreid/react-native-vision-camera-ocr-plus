@@ -153,12 +153,120 @@ export interface DocumentRecognizerOptions {
   searchCells?: string[];
 }
 
+export interface CellData {
+  side: 'left' | 'right';
+  row: number;
+  column: number;
+  value: string;
+  confidence: number;
+  boundingBox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  };
+}
+
+export interface TableStructureData {
+  rowCount: number;
+  columnCount: number;
+  columns: Array<{
+    columnIndex: number;
+    cells: Array<{
+      row: number;
+      column: number;
+      value: string;
+      confidence: number;
+      boundingBox: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      };
+    }>;
+    boundingBox: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+  }>;
+}
+
+export interface DualImageResult {
+  /** Combined CSV output with comprehensive metadata header */
+  csv: string;
+  /** Date column extraction with bounding boxes */
+  dateColumn: {
+    columnName: string;
+    columnBounds: {
+      left: number;
+      right: number;
+      top: number;
+      bottom: number;
+      width: number;
+      height: number;
+    };
+    cells: Array<{
+      value: string;
+      boundingBox: {
+        left: number;
+        right: number;
+        top: number;
+        bottom: number;
+      };
+      confidence: number;
+      isHeader: boolean;
+    }>;
+  };
+  /** Detected rectangles (table cell boundaries) */
+  rectangles: {
+    left: Array<{
+      topLeft: { x: number; y: number };
+      topRight: { x: number; y: number };
+      bottomLeft: { x: number; y: number };
+      bottomRight: { x: number; y: number };
+      confidence: number;
+    }>;
+    right: Array<{
+      topLeft: { x: number; y: number };
+      topRight: { x: number; y: number };
+      bottomLeft: { x: number; y: number };
+      bottomRight: { x: number; y: number };
+      confidence: number;
+    }>;
+  };
+  /** Left table structure with columns and cells */
+  leftTable: TableStructureData;
+  /** Right table structure with columns and cells */
+  rightTable: TableStructureData;
+  /** All cell data with bounding boxes */
+  cellData: {
+    left: CellData[];
+    right: CellData[];
+  };
+  /** Processing metadata */
+  metadata: {
+    leftRows: number;
+    leftColumns: number;
+    rightRows: number;
+    rightColumns: number;
+    totalCells: number;
+    processingDate: string;
+  };
+}
+
 /**
  * Recognizes tables from two images (left and right pages) and combines them into a single CSV.
+ * Returns comprehensive data including bounding boxes, confidence scores, and table structure.
  * 
  * @param leftUri - URI of the left page image
  * @param rightUri - URI of the right page image
- * @returns Promise resolving to combined CSV string
+ * @returns Promise resolving to comprehensive dual table results
  * 
  * @example
  * ```typescript
@@ -166,13 +274,23 @@ export interface DocumentRecognizerOptions {
  *   leftUri: 'file:///path/to/left.jpg',
  *   rightUri: 'file:///path/to/right.jpg'
  * });
- * console.log(result.csv);
+ * 
+ * console.log('CSV:', result.csv);
+ * console.log('Left table:', result.leftTable.rowCount, 'rows');
+ * console.log('Total cells:', result.metadata.totalCells);
+ * console.log('Cell data:', result.cellData.left.length, 'left cells');
+ * 
+ * // Access individual cell with bounding box
+ * const firstCell = result.cellData.left[0];
+ * console.log(`Cell [${firstCell.row},${firstCell.column}]: "${firstCell.value}"`);
+ * console.log(`Position: (${firstCell.boundingBox.x}, ${firstCell.boundingBox.y})`);
+ * console.log(`Confidence: ${firstCell.confidence}`);
  * ```
  */
 export async function DualImageRecognizer(options: {
   leftUri: string;
   rightUri: string;
-}): Promise<{ csv: string }> {
+}): Promise<DualImageResult> {
   const { DocumentRecognizerModule } = NativeModules;
   const { leftUri, rightUri } = options;
 
