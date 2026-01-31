@@ -130,10 +130,8 @@ Cell ${idx + 1}:
   Position: [Row ${cell.row}, Column ${cell.column}]
   Value: "${cell.value}"
   Confidence: ${(cell.confidence * 100).toFixed(2)}%
-  Bounding Box:
-    - Position: (${Math.round(cell.boundingBox.x)}, ${Math.round(cell.boundingBox.y)})
-    - Size: ${Math.round(cell.boundingBox.width)} × ${Math.round(cell.boundingBox.height)}
-    - Bounds: Left=${Math.round(cell.boundingBox.left)}, Top=${Math.round(cell.boundingBox.top)}, Right=${Math.round(cell.boundingBox.right)}, Bottom=${Math.round(cell.boundingBox.bottom)}
+  Bounding Box: ${Math.round(cell.boundingBox.x)}, ${Math.round(cell.boundingBox.y)}, ${Math.round(cell.boundingBox.height)}, ${Math.round(cell.boundingBox.width)}
+  Bounds Detail: Left=${Math.round(cell.boundingBox.left)}, Top=${Math.round(cell.boundingBox.top)}, Right=${Math.round(cell.boundingBox.right)}, Bottom=${Math.round(cell.boundingBox.bottom)}
 `;
     });
 
@@ -148,10 +146,8 @@ Cell ${idx + 1}:
   Position: [Row ${cell.row}, Column ${cell.column}]
   Value: "${cell.value}"
   Confidence: ${(cell.confidence * 100).toFixed(2)}%
-  Bounding Box:
-    - Position: (${Math.round(cell.boundingBox.x)}, ${Math.round(cell.boundingBox.y)})
-    - Size: ${Math.round(cell.boundingBox.width)} × ${Math.round(cell.boundingBox.height)}
-    - Bounds: Left=${Math.round(cell.boundingBox.left)}, Top=${Math.round(cell.boundingBox.top)}, Right=${Math.round(cell.boundingBox.right)}, Bottom=${Math.round(cell.boundingBox.bottom)}
+  Bounding Box: ${Math.round(cell.boundingBox.x)}, ${Math.round(cell.boundingBox.y)}, ${Math.round(cell.boundingBox.height)}, ${Math.round(cell.boundingBox.width)}
+  Bounds Detail: Left=${Math.round(cell.boundingBox.left)}, Top=${Math.round(cell.boundingBox.top)}, Right=${Math.round(cell.boundingBox.right)}, Bottom=${Math.round(cell.boundingBox.bottom)}
 `;
     });
 
@@ -165,7 +161,7 @@ LEFT TABLE COLUMN STRUCTURE
     results.leftTable.columns.forEach((col: any, idx: number) => {
       output += `
 Column ${idx + 1} (Index ${col.columnIndex}):
-  Bounding Box: (${Math.round(col.boundingBox.x)}, ${Math.round(col.boundingBox.y)}) - ${Math.round(col.boundingBox.width)} × ${Math.round(col.boundingBox.height)}
+  Bounding Box: ${Math.round(col.boundingBox.x)}, ${Math.round(col.boundingBox.y)}, ${Math.round(col.boundingBox.height)}, ${Math.round(col.boundingBox.width)}
   Cells in column: ${col.cells.length}
 `;
       col.cells.forEach((cell: any, cellIdx: number) => {
@@ -183,7 +179,7 @@ RIGHT TABLE COLUMN STRUCTURE
     results.rightTable.columns.forEach((col: any, idx: number) => {
       output += `
 Column ${idx + 1} (Index ${col.columnIndex}):
-  Bounding Box: (${Math.round(col.boundingBox.x)}, ${Math.round(col.boundingBox.y)}) - ${Math.round(col.boundingBox.width)} × ${Math.round(col.boundingBox.height)}
+  Bounding Box: ${Math.round(col.boundingBox.x)}, ${Math.round(col.boundingBox.y)}, ${Math.round(col.boundingBox.height)}, ${Math.round(col.boundingBox.width)}
   Cells in column: ${col.cells.length}
 `;
       col.cells.forEach((cell: any, cellIdx: number) => {
@@ -385,7 +381,7 @@ Generated: ${new Date().toLocaleString()}
                       {results.cellData.left.slice(0, 10).map((cell: any, idx: number) => (
                         <Text key={`left-${idx}`} style={styles.cellDataText}>
                           [{cell.row},{cell.column}] "{cell.value}" {'\n'}
-                          Conf: {(cell.confidence * 100).toFixed(1)}% | Pos: ({Math.round(cell.boundingBox.x)},{Math.round(cell.boundingBox.y)}) | Size: {Math.round(cell.boundingBox.width)}×{Math.round(cell.boundingBox.height)}
+                          Conf: {(cell.confidence * 100).toFixed(1)}% | Bounds: {Math.round(cell.boundingBox.x)}, {Math.round(cell.boundingBox.y)}, {Math.round(cell.boundingBox.height)}, {Math.round(cell.boundingBox.width)}
                         </Text>
                       ))}
                       {results.cellData.left.length > 10 && (
@@ -398,7 +394,7 @@ Generated: ${new Date().toLocaleString()}
                       {results.cellData.right.slice(0, 10).map((cell: any, idx: number) => (
                         <Text key={`right-${idx}`} style={styles.cellDataText}>
                           [{cell.row},{cell.column}] "{cell.value}" {'\n'}
-                          Conf: {(cell.confidence * 100).toFixed(1)}% | Pos: ({Math.round(cell.boundingBox.x)},{Math.round(cell.boundingBox.y)}) | Size: {Math.round(cell.boundingBox.width)}×{Math.round(cell.boundingBox.height)}
+                          Conf: {(cell.confidence * 100).toFixed(1)}% | Bounds: {Math.round(cell.boundingBox.x)}, {Math.round(cell.boundingBox.y)}, {Math.round(cell.boundingBox.height)}, {Math.round(cell.boundingBox.width)}
                         </Text>
                       ))}
                       {results.cellData.right.length > 10 && (
@@ -418,7 +414,7 @@ Generated: ${new Date().toLocaleString()}
                       </Text>
                       {results.leftTable.columns.slice(0, 5).map((col: any, idx: number) => (
                         <Text key={`left-col-${idx}`} style={styles.structureColText}>
-                          Col {col.columnIndex}: {col.cells.length} cells | Bounds: ({Math.round(col.boundingBox.x)},{Math.round(col.boundingBox.y)}) {Math.round(col.boundingBox.width)}×{Math.round(col.boundingBox.height)}
+                          Col {col.columnIndex}: {col.cells.length} cells | Bounds: {Math.round(col.boundingBox.x)}, {Math.round(col.boundingBox.y)}, {Math.round(col.boundingBox.height)}, {Math.round(col.boundingBox.width)}
                         </Text>
                       ))}
                       {results.leftTable.columns.length > 5 && (
@@ -433,7 +429,7 @@ Generated: ${new Date().toLocaleString()}
                       </Text>
                       {results.rightTable.columns.slice(0, 5).map((col: any, idx: number) => (
                         <Text key={`right-col-${idx}`} style={styles.structureColText}>
-                          Col {col.columnIndex}: {col.cells.length} cells | Bounds: ({Math.round(col.boundingBox.x)},{Math.round(col.boundingBox.y)}) {Math.round(col.boundingBox.width)}×{Math.round(col.boundingBox.height)}
+                          Col {col.columnIndex}: {col.cells.length} cells | Bounds: {Math.round(col.boundingBox.x)}, {Math.round(col.boundingBox.y)}, {Math.round(col.boundingBox.height)}, {Math.round(col.boundingBox.width)}
                         </Text>
                       ))}
                       {results.rightTable.columns.length > 5 && (

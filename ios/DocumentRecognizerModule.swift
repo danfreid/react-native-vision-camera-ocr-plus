@@ -468,10 +468,44 @@ class DocumentRecognizerModule: NSObject {
             colPositions = adjustedPositions
         }
         
-        // Create header with our predefined headers
+        // Calculate column widths and heights from actual data
+        var columnBounds: [CGRect] = []
+        for (idx, colX) in colPositions.enumerated() {
+            // Find all cells in this column from data rows
+            var cellsInColumn: [(text: String, bounds: CGRect)] = []
+            for row in dataRows {
+                for item in row {
+                    if abs(item.bounds.minX - colX) < 30 {
+                        cellsInColumn.append(item)
+                        break
+                    }
+                }
+            }
+            
+            // Calculate bounds from actual cells
+            if !cellsInColumn.isEmpty {
+                let minX = cellsInColumn.map { $0.bounds.minX }.min() ?? colX
+                let maxX = cellsInColumn.map { $0.bounds.maxX }.max() ?? colX + 50
+                let minY = cellsInColumn.map { $0.bounds.minY }.min() ?? headerY
+                let maxY = cellsInColumn.map { $0.bounds.maxY }.max() ?? headerY + 20
+                let avgHeight = cellsInColumn.map { $0.bounds.height }.reduce(0, +) / CGFloat(cellsInColumn.count)
+                
+                columnBounds.append(CGRect(
+                    x: minX,
+                    y: headerY,
+                    width: maxX - minX,
+                    height: avgHeight
+                ))
+            } else {
+                // Fallback for empty columns
+                let nextX = idx + 1 < colPositions.count ? colPositions[idx + 1] : colX + 50
+                columnBounds.append(CGRect(x: colX, y: headerY, width: nextX - colX - 5, height: 20))
+            }
+        }
+        
+        // Create header with our predefined headers and calculated bounds
         for (idx, headerText) in headers.enumerated() {
-            let colX = idx < colPositions.count ? colPositions[idx] : (colPositions.last ?? 0) + CGFloat(idx * 50)
-            let bounds = CGRect(x: colX, y: headerY, width: 50, height: 20)
+            let bounds = idx < columnBounds.count ? columnBounds[idx] : CGRect(x: CGFloat(idx * 50), y: headerY, width: 50, height: 20)
             mergedHeader.append((text: headerText, bounds: bounds))
         }
         
@@ -534,10 +568,44 @@ class DocumentRecognizerModule: NSObject {
             colPositions = adjustedPositions
         }
         
-        // Create header with our predefined headers
+        // Calculate column widths and heights from actual data
+        var columnBounds: [CGRect] = []
+        for (idx, colX) in colPositions.enumerated() {
+            // Find all cells in this column from data rows
+            var cellsInColumn: [(text: String, bounds: CGRect, confidence: Float)] = []
+            for row in dataRows {
+                for item in row {
+                    if abs(item.bounds.minX - colX) < 30 {
+                        cellsInColumn.append(item)
+                        break
+                    }
+                }
+            }
+            
+            // Calculate bounds from actual cells
+            if !cellsInColumn.isEmpty {
+                let minX = cellsInColumn.map { $0.bounds.minX }.min() ?? colX
+                let maxX = cellsInColumn.map { $0.bounds.maxX }.max() ?? colX + 50
+                let minY = cellsInColumn.map { $0.bounds.minY }.min() ?? headerY
+                let maxY = cellsInColumn.map { $0.bounds.maxY }.max() ?? headerY + 20
+                let avgHeight = cellsInColumn.map { $0.bounds.height }.reduce(0, +) / CGFloat(cellsInColumn.count)
+                
+                columnBounds.append(CGRect(
+                    x: minX,
+                    y: headerY,
+                    width: maxX - minX,
+                    height: avgHeight
+                ))
+            } else {
+                // Fallback for empty columns
+                let nextX = idx + 1 < colPositions.count ? colPositions[idx + 1] : colX + 50
+                columnBounds.append(CGRect(x: colX, y: headerY, width: nextX - colX - 5, height: 20))
+            }
+        }
+        
+        // Create header with our predefined headers and calculated bounds
         for (idx, headerText) in headers.enumerated() {
-            let colX = idx < colPositions.count ? colPositions[idx] : (colPositions.last ?? 0) + CGFloat(idx * 50)
-            let bounds = CGRect(x: colX, y: headerY, width: 50, height: 20)
+            let bounds = idx < columnBounds.count ? columnBounds[idx] : CGRect(x: CGFloat(idx * 50), y: headerY, width: 50, height: 20)
             mergedHeader.append((text: headerText, bounds: bounds, confidence: 1.0))
         }
         
