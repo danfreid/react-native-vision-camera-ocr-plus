@@ -336,7 +336,7 @@ export default function App() {
                       <Text style={styles.csvText}>{imageText}</Text>
                     </ScrollView>
                     <TouchableOpacity style={styles.shareButton} onPress={shareTableAsText}>
-                      <Text style={styles.shareButtonText}>📤 Share CSV</Text>
+                      <Text style={styles.shareButtonText}>📤 Share Results</Text>
                     </TouchableOpacity>
                   </View>
                 )}

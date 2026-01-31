@@ -8,6 +8,13 @@ cd example
 eas init
 yarn
 npx expo prebuild --clean
+
+DEV
+yarn add expo-dev-client
+eas build --platform ios --profile development
+npx expo start --dev-client
+
+PROD
 eas build --platform ios --profile production --auto-submit
 
 # DFR

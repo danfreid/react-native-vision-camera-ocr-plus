@@ -22,21 +22,35 @@ class DocumentRecognizerModule: NSObject {
         }
         
         let group = DispatchGroup()
-        var leftRows: [[String]] = []
-        var rightRows: [[String]] = []
+        var leftResult: (rows: [[String]], rawData: [[(text: String, bounds: CGRect, confidence: Float)]]) = ([], [])
+        var rightResult: (rows: [[String]], rawData: [[(text: String, bounds: CGRect, confidence: Float)]]) = ([], [])
+        var leftRectangles: [[String: Any]] = []
+        var rightRectangles: [[String: Any]] = []
         var error: Error?
         
         group.enter()
-        extractTableRows(cgImage: leftCGImage, imageSize: leftImage.size) { rows, err in
-            leftRows = rows
+        extractTableRowsWithData(cgImage: leftCGImage, imageSize: leftImage.size) { rows, rawData, err in
+            leftResult = (rows, rawData)
             error = err
             group.leave()
         }
         
         group.enter()
-        extractTableRows(cgImage: rightCGImage, imageSize: rightImage.size) { rows, err in
-            rightRows = rows
+        extractTableRowsWithData(cgImage: rightCGImage, imageSize: rightImage.size) { rows, rawData, err in
+            rightResult = (rows, rawData)
             if error == nil { error = err }
+            group.leave()
+        }
+        
+        group.enter()
+        detectRectangles(cgImage: leftCGImage, imageSize: leftImage.size) { rects in
+            leftRectangles = rects
+            group.leave()
+        }
+        
+        group.enter()
+        detectRectangles(cgImage: rightCGImage, imageSize: rightImage.size) { rects in
+            rightRectangles = rects
             group.leave()
         }
         
@@ -46,8 +60,17 @@ class DocumentRecognizerModule: NSObject {
                 return
             }
             
-            let csv = self.combineToCSV(leftRows: leftRows, rightRows: rightRows)
-            resolve(["csv": csv])
+            let csv = self.combineToCSV(leftRows: leftResult.rows, rightRows: rightResult.rows)
+            let dateColumn = self.extractDateColumn(rawData: leftResult.rawData)
+            
+            resolve([
+                "csv": csv,
+                "dateColumn": dateColumn,
+                "rectangles": [
+                    "left": leftRectangles,
+                    "right": rightRectangles
+                ]
+            ])
         }
     }
     
@@ -160,6 +183,43 @@ class DocumentRecognizerModule: NSObject {
         }
     }
     
+    private func extractTableRowsWithData(cgImage: CGImage, imageSize: CGSize, completion: @escaping ([[String]], [[(text: String, bounds: CGRect, confidence: Float)]], Error?) -> Void) {
+        let request = VNRecognizeTextRequest { request, error in
+            if let error = error {
+                completion([], [], error)
+                return
+            }
+            
+            guard let observations = request.results as? [VNRecognizedTextObservation] else {
+                completion([], [], nil)
+                return
+            }
+            
+            var textItems: [(text: String, bounds: CGRect, confidence: Float)] = []
+            for observation in observations {
+                guard let topCandidate = observation.topCandidates(1).first else { continue }
+                let bounds = CGRect(
+                    x: observation.boundingBox.origin.x * imageSize.width,
+                    y: (1 - observation.boundingBox.origin.y - observation.boundingBox.height) * imageSize.height,
+                    width: observation.boundingBox.width * imageSize.width,
+                    height: observation.boundingBox.height * imageSize.height
+                )
+                textItems.append((text: topCandidate.string, bounds: bounds, confidence: topCandidate.confidence))
+            }
+            
+            let (rows, rawData) = self.groupIntoRowsWithData(textItems: textItems)
+            completion(rows, rawData, nil)
+        }
+        
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        DispatchQueue.global(qos: .userInitiated).async {
+            try? handler.perform([request])
+        }
+    }
+    
     private func groupIntoRows(textItems: [(text: String, bounds: CGRect)]) -> [[String]] {
         guard !textItems.isEmpty else { return [] }
         
@@ -195,10 +255,45 @@ class DocumentRecognizerModule: NSObject {
         return alignColumns(rows: rows)
     }
     
+    private func groupIntoRowsWithData(textItems: [(text: String, bounds: CGRect, confidence: Float)]) -> ([[String]], [[(text: String, bounds: CGRect, confidence: Float)]]) {
+        guard !textItems.isEmpty else { return ([], []) }
+        
+        let avgHeight = textItems.map { $0.bounds.height }.reduce(0, +) / CGFloat(textItems.count)
+        let rowThreshold = max(avgHeight * 0.6, 10)
+        
+        var sorted = textItems.sorted { a, b in
+            let yDiff = abs(a.bounds.midY - b.bounds.midY)
+            if yDiff < rowThreshold { return a.bounds.minX < b.bounds.minX }
+            return a.bounds.minY < b.bounds.minY
+        }
+        
+        var rows: [[(text: String, bounds: CGRect, confidence: Float)]] = []
+        var currentRow: [(text: String, bounds: CGRect, confidence: Float)] = []
+        var lastY: CGFloat = -1000
+        
+        for item in sorted {
+            if abs(item.bounds.midY - lastY) > rowThreshold {
+                if !currentRow.isEmpty {
+                    rows.append(currentRow.sorted { $0.bounds.minX < $1.bounds.minX })
+                }
+                currentRow = [item]
+            } else {
+                currentRow.append(item)
+            }
+            lastY = item.bounds.midY
+        }
+        if !currentRow.isEmpty {
+            rows.append(currentRow.sorted { $0.bounds.minX < $1.bounds.minX })
+        }
+        
+        rows = mergeHeadersWithData(rows: rows)
+        let stringRows = alignColumns(rows: rows.map { $0.map { (text: $0.text, bounds: $0.bounds) } })
+        return (stringRows, rows)
+    }
+    
     private func mergeHeaders(rows: [[(text: String, bounds: CGRect)]]) -> [[(text: String, bounds: CGRect)]] {
         guard rows.count > 2 else { return rows }
         
-        // Left page: DATE -> LNDGS NIGHT (25 columns)
         let leftHeaders = [
             "DATE", "AIRCRAFT MAKE AND MODEL", "AIRCRAFT IDENT", "FROM", "TO",
             "TOTAL DURATION OF FLIGHT", "", "AIRPLANE SINGLE- ENGINE LAND", "", "AIRPLANE SINGLE- ENGINE SEA",
@@ -206,7 +301,6 @@ class DocumentRecognizerModule: NSObject {
             "", "GLIDER", "", "TURBOPROP", "", "", "", "D A Y", "N I G H T"
         ]
         
-        // Right page: NIGHT -> REMARKS (23 columns)
         let rightHeaders = [
             "NIGHT", "", "ACTUAL INSTRUMENT", "", "SIMULATED INSTRUMENT (HOOD)", "",
             "APP NO.", "TYPE", "FLIGHT SIMULATOR", "", "CROSS COUNTRY", "", "SOLO",
@@ -214,23 +308,22 @@ class DocumentRecognizerModule: NSObject {
             "", "AS FLIGHT INSTRUCTOR", "", "REMARKS AND ENDORSEMENTS"
         ]
         
-        // Get column positions from data rows
-        let dataRows = Array(rows.dropFirst(10).prefix(3))
+        let dataRows = Array(rows.dropFirst(8).prefix(5))
+        guard !dataRows.isEmpty else { return rows }
+        
         var colPositions: [CGFloat] = []
         for row in dataRows {
             for item in row {
                 let x = item.bounds.minX
-                if !colPositions.contains(where: { abs($0 - x) < 15 }) {
+                if !colPositions.contains(where: { abs($0 - x) < 20 }) {
                     colPositions.append(x)
                 }
             }
         }
         colPositions.sort()
         
-        // Detect page by column count
-        let headers = colPositions.count == 25 ? leftHeaders : rightHeaders
+        let headers = colPositions.count >= 24 ? leftHeaders : rightHeaders
         
-        // Build header row
         var mergedHeader: [(text: String, bounds: CGRect)] = []
         let headerY = rows[0][0].bounds.minY
         for (idx, colX) in colPositions.enumerated() {
@@ -239,7 +332,51 @@ class DocumentRecognizerModule: NSObject {
             mergedHeader.append((text: headerText, bounds: bounds))
         }
         
-        return [mergedHeader] + Array(rows.dropFirst(10))
+        return [mergedHeader] + Array(rows.dropFirst(8))
+    }
+    
+    private func mergeHeadersWithData(rows: [[(text: String, bounds: CGRect, confidence: Float)]]) -> [[(text: String, bounds: CGRect, confidence: Float)]] {
+        guard rows.count > 2 else { return rows }
+        
+        let leftHeaders = [
+            "DATE", "AIRCRAFT MAKE AND MODEL", "AIRCRAFT IDENT", "FROM", "TO",
+            "TOTAL DURATION OF FLIGHT", "", "AIRPLANE SINGLE- ENGINE LAND", "", "AIRPLANE SINGLE- ENGINE SEA",
+            "", "AIRPLANE MULTI- ENGINE LAND", "", "NEBASET", "", "ROTORCRAFT HELICOPTER",
+            "", "GLIDER", "", "TURBOPROP", "", "", "", "D A Y", "N I G H T"
+        ]
+        
+        let rightHeaders = [
+            "NIGHT", "", "ACTUAL INSTRUMENT", "", "SIMULATED INSTRUMENT (HOOD)", "",
+            "APP NO.", "TYPE", "FLIGHT SIMULATOR", "", "CROSS COUNTRY", "", "SOLO",
+            "", "PILOT IN COMMAND", "", "SECOND IN COMMAND", "", "DUAL RECEIVED",
+            "", "AS FLIGHT INSTRUCTOR", "", "REMARKS AND ENDORSEMENTS"
+        ]
+        
+        let dataRows = Array(rows.dropFirst(8).prefix(5))
+        guard !dataRows.isEmpty else { return rows }
+        
+        var colPositions: [CGFloat] = []
+        for row in dataRows {
+            for item in row {
+                let x = item.bounds.minX
+                if !colPositions.contains(where: { abs($0 - x) < 20 }) {
+                    colPositions.append(x)
+                }
+            }
+        }
+        colPositions.sort()
+        
+        let headers = colPositions.count >= 24 ? leftHeaders : rightHeaders
+        
+        var mergedHeader: [(text: String, bounds: CGRect, confidence: Float)] = []
+        let headerY = rows[0][0].bounds.minY
+        for (idx, colX) in colPositions.enumerated() {
+            let headerText = idx < headers.count ? headers[idx] : ""
+            let bounds = CGRect(x: colX, y: headerY, width: 50, height: 20)
+            mergedHeader.append((text: headerText, bounds: bounds, confidence: 1.0))
+        }
+        
+        return [mergedHeader] + Array(rows.dropFirst(8))
     }
     
     private func alignColumns(rows: [[(text: String, bounds: CGRect)]]) -> [[String]] {
@@ -287,6 +424,10 @@ class DocumentRecognizerModule: NSObject {
         var csv = ""
         let maxRows = max(leftRows.count, rightRows.count)
         
+        // Add metadata header
+        csv += "# Using DocumentRecognizerModule.processDualImages (iOS 26)\n"
+        csv += "# Left columns: \(leftRows.first?.count ?? 0), Right columns: \(rightRows.first?.count ?? 0)\n\n"
+        
         for i in 0..<maxRows {
             let leftCols = i < leftRows.count ? leftRows[i] : []
             let rightCols = i < rightRows.count ? rightRows[i] : []
@@ -296,6 +437,120 @@ class DocumentRecognizerModule: NSObject {
         }
         
         return csv
+    }
+    
+    private func extractDateColumn(rawData: [[(text: String, bounds: CGRect, confidence: Float)]]) -> [String: Any] {
+        guard rawData.count > 1 else { return [:] }
+        
+        let headerRow = rawData[0]
+        guard let dateHeader = headerRow.first(where: { $0.text == "DATE" }) else { return [:] }
+        
+        let dateX = dateHeader.bounds.minX
+        let dateWidth = dateHeader.bounds.width
+        let leftBoundary = dateX
+        let rightBoundary = dateX + dateWidth
+        
+        let dataRows = Array(rawData.dropFirst())
+        let topBoundary = dataRows.first?.first?.bounds.minY ?? dateHeader.bounds.maxY
+        let bottomBoundary = dataRows.last?.last?.bounds.maxY ?? topBoundary
+        
+        let columnBounds = [
+            "left": leftBoundary,
+            "right": rightBoundary,
+            "top": topBoundary,
+            "bottom": bottomBoundary,
+            "width": rightBoundary - leftBoundary,
+            "height": bottomBoundary - topBoundary
+        ]
+        
+        var cells: [[String: Any]] = []
+        cells.append([
+            "value": "DATE",
+            "boundingBox": [
+                "left": dateHeader.bounds.minX,
+                "right": dateHeader.bounds.maxX,
+                "top": dateHeader.bounds.minY,
+                "bottom": dateHeader.bounds.maxY
+            ],
+            "confidence": 1.0,
+            "isHeader": true
+        ])
+        
+        for row in dataRows {
+            for cell in row {
+                let cellX = cell.bounds.minX
+                if abs(cellX - dateX) < 20 {
+                    cells.append([
+                        "value": cell.text,
+                        "boundingBox": [
+                            "left": cell.bounds.minX,
+                            "right": cell.bounds.maxX,
+                            "top": cell.bounds.minY,
+                            "bottom": cell.bounds.maxY
+                        ],
+                        "confidence": cell.confidence,
+                        "isHeader": false
+                    ])
+                    break
+                }
+            }
+        }
+        
+        return [
+            "columnName": "DATE",
+            "columnBounds": columnBounds,
+            "cells": cells
+        ]
+    }
+    
+    private func detectRectangles(cgImage: CGImage, imageSize: CGSize, completion: @escaping ([[String: Any]]) -> Void) {
+        let request = VNDetectRectanglesRequest { request, error in
+            guard error == nil,
+                  let observations = request.results as? [VNRectangleObservation] else {
+                completion([])
+                return
+            }
+            
+            var rectangles: [[String: Any]] = []
+            for observation in observations {
+                let topLeft = CGPoint(
+                    x: observation.topLeft.x * imageSize.width,
+                    y: (1 - observation.topLeft.y) * imageSize.height
+                )
+                let topRight = CGPoint(
+                    x: observation.topRight.x * imageSize.width,
+                    y: (1 - observation.topRight.y) * imageSize.height
+                )
+                let bottomLeft = CGPoint(
+                    x: observation.bottomLeft.x * imageSize.width,
+                    y: (1 - observation.bottomLeft.y) * imageSize.height
+                )
+                let bottomRight = CGPoint(
+                    x: observation.bottomRight.x * imageSize.width,
+                    y: (1 - observation.bottomRight.y) * imageSize.height
+                )
+                
+                rectangles.append([
+                    "topLeft": ["x": topLeft.x, "y": topLeft.y],
+                    "topRight": ["x": topRight.x, "y": topRight.y],
+                    "bottomLeft": ["x": bottomLeft.x, "y": bottomLeft.y],
+                    "bottomRight": ["x": bottomRight.x, "y": bottomRight.y],
+                    "confidence": observation.confidence
+                ])
+            }
+            
+            completion(rectangles)
+        }
+        
+        request.minimumAspectRatio = 0.1
+        request.maximumAspectRatio = 1.0
+        request.minimumSize = 0.01
+        request.maximumObservations = 100
+        
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        DispatchQueue.global(qos: .userInitiated).async {
+            try? handler.perform([request])
+        }
     }
     
     private func inferTableStructure(textItems: [(text: String, bounds: CGRect, confidence: Float)], rawText: String) -> [String: Any] {
