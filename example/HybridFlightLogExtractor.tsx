@@ -346,27 +346,37 @@ export default function HybridFlightLogExtractor() {
 
     try {
       // Step 1: Get OCR bounding boxes
+      console.log('[Process] Step 1: Starting Vision OCR...');
       setStatus('Running Vision OCR...');
       setProgress(10);
 
+      const ocrStartTime = Date.now();
       const ocrResult = await DualImageRecognizer({
         leftUri: leftImage,
         rightUri: rightImage,
       });
+      const ocrDuration = ((Date.now() - ocrStartTime) / 1000).toFixed(1);
 
-      console.log('OCR complete:', {
+      console.log(`[Process] OCR complete in ${ocrDuration}s:`, {
         leftCells: ocrResult.cellData.left.length,
         rightCells: ocrResult.cellData.right.length,
+        leftColumns: ocrResult.leftTable.columnCount,
+        rightColumns: ocrResult.rightTable.columnCount,
+        leftRows: ocrResult.leftTable.rowCount,
+        rightRows: ocrResult.rightTable.rowCount,
       });
 
       // Step 2: Format OCR data for LLM
+      console.log('[Process] Step 2: Formatting OCR data for LLM...');
       setStatus('Preparing data for LLM...');
       setProgress(30);
 
       const ocrSummary = formatOCRForLLM(ocrResult);
+      console.log(`[Process] OCR summary length: ${ocrSummary.length} chars`);
 
       // Step 3: Run LLM extraction
-      setStatus('Extracting with Qwen3-VL...');
+      console.log('[Process] Step 3: Starting LLM extraction...');
+      setStatus('Extracting with Qwen3-VL (this may take 1-2 min)...');
       setProgress(50);
 
       const prompt = `${SYSTEM_PROMPT}
@@ -415,6 +425,13 @@ Return ONLY a JSON array with one object per flight entry. Each object should ha
 
 Return ONLY the JSON array, no explanations or markdown.`;
 
+      console.log(`[Process] Prompt length: ${prompt.length} chars`);
+      console.log('[Process] Starting LLM completion...');
+      
+      let tokenCount = 0;
+      let lastLogTime = Date.now();
+      const llmStartTime = Date.now();
+
       const completion = await contextRef.current!.completion(
         {
           messages: [
@@ -432,18 +449,55 @@ Return ONLY the JSON array, no explanations or markdown.`;
           stop: ['</s>', '\n\n\n'],
         },
         (data) => {
-          // Progress callback
+          // Progress callback - called for each token generated
           if (data.token) {
-            setProgress(50 + (data.token.length / 4000) * 40);
+            tokenCount++;
+            const progressPercent = 50 + Math.min((tokenCount / 4000) * 45, 45);
+            setProgress(progressPercent);
+            
+            // Log every 50 tokens or every 5 seconds
+            const now = Date.now();
+            if (tokenCount % 50 === 0 || now - lastLogTime > 5000) {
+              const elapsed = ((now - llmStartTime) / 1000).toFixed(1);
+              const tokensPerSec = (tokenCount / (now - llmStartTime) * 1000).toFixed(1);
+              console.log(`[Process] LLM progress: ${tokenCount} tokens in ${elapsed}s (${tokensPerSec} tok/s)`);
+              setStatus(`Generating... ${tokenCount} tokens (${tokensPerSec} tok/s)`);
+              lastLogTime = now;
+            }
           }
         }
       );
 
+      const llmDuration = ((Date.now() - llmStartTime) / 1000).toFixed(1);
+      const avgTokensPerSec = (tokenCount / (Date.now() - llmStartTime) * 1000).toFixed(1);
+      console.log(`[Process] LLM complete in ${llmDuration}s: ${tokenCount} tokens (${avgTokensPerSec} tok/s avg)`);
+      console.log(`[Process] Output length: ${completion.text.length} chars`);
+
       setProgress(95);
       setStatus('Parsing results...');
+      console.log('[Process] Step 4: Parsing LLM output...');
 
       // Parse LLM output
       const extracted = parseModelOutput(completion.text);
+      console.log(`[Process] Extracted ${extracted.length} flight entries`);
+
+      setResult({
+        ocrData: ocrResult,
+        extractedFlights: extracted,
+        rawLLMOutput: completion.text,
+      });
+
+      setProgress(100);
+      setStatus(`Complete! ${extracted.length} flights extracted`);
+      console.log('[Process] Processing complete!');
+    } catch (error: any) {
+      console.error('[Process] ERROR:', error);
+      Alert.alert('Error', error.message);
+      setStatus('Error occurred');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
       setResult({
         ocrData: ocrResult,
