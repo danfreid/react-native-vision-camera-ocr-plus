@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  AppState,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -17,6 +18,7 @@ import { File, Paths, Directory } from 'expo-file-system/next';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { DualImageRecognizer } from 'react-native-vision-camera-ocr';
+
 
 // Model definitions
 interface ModelConfig {
@@ -97,10 +99,27 @@ export default function HybridFlightLogExtractor() {
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [backgroundWarning, setBackgroundWarning] = useState(false);
   const contextRef = useRef<LlamaContext | null>(null);
+  const processingRef = useRef(false);
 
   useEffect(() => {
     checkAndLoadModel();
+    
+    // Monitor app state changes
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'background' && processingRef.current) {
+        console.log('[Background] App moved to background during processing');
+        setBackgroundWarning(true);
+      } else if (nextAppState === 'active' && processingRef.current) {
+        console.log('[Background] App returned to foreground, processing continues');
+        setBackgroundWarning(false);
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -341,8 +360,10 @@ export default function HybridFlightLogExtractor() {
     }
 
     setIsProcessing(true);
+    processingRef.current = true;
     setProgress(0);
     setResult(null);
+    setBackgroundWarning(false);
 
     try {
       // Step 1: Get OCR bounding boxes
@@ -496,23 +517,8 @@ Return ONLY the JSON array, no explanations or markdown.`;
       setStatus('Error occurred');
     } finally {
       setIsProcessing(false);
-    }
-  };
-
-      setResult({
-        ocrData: ocrResult,
-        extractedFlights: extracted,
-        rawLLMOutput: completion.text,
-      });
-
-      setProgress(100);
-      setStatus('Complete!');
-    } catch (error: any) {
-      console.error('Processing error:', error);
-      Alert.alert('Error', error.message);
-      setStatus('Error occurred');
-    } finally {
-      setIsProcessing(false);
+      processingRef.current = false;
+      setBackgroundWarning(false);
     }
   };
 
@@ -641,6 +647,14 @@ Return ONLY the JSON array, no explanations or markdown.`;
         <Text style={styles.subtitle}>Vision OCR + Qwen3-VL</Text>
         <Text style={styles.status}>{status}</Text>
       </View>
+
+      {backgroundWarning && (
+        <View style={styles.backgroundWarning}>
+          <Text style={styles.backgroundWarningText}>
+            ⚠️ App is in background. Processing may be slower or paused. Keep app in foreground for best performance.
+          </Text>
+        </View>
+      )}
 
       {!modelReady && (
         <View style={styles.modelWarning}>
@@ -864,6 +878,18 @@ const styles = StyleSheet.create({
   warningText: {
     color: 'white',
     fontSize: 14,
+  },
+  backgroundWarning: {
+    margin: 20,
+    marginTop: 0,
+    padding: 16,
+    backgroundColor: '#FF5722',
+    borderRadius: 8,
+  },
+  backgroundWarningText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
   },
   imageSection: {
     flexDirection: 'row',
