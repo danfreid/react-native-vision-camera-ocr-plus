@@ -12,7 +12,7 @@ npx expo prebuild --clean
 
 DEV
 yarn add expo-dev-client
-eas build --platform ios --profile development --non-interactive --auto-submit
+eas build --platform ios --profile development --non-interactive
 npx expo start --dev-client
 
 PROD

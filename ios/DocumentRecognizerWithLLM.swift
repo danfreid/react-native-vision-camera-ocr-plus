@@ -388,8 +388,8 @@ class DocumentRecognizerWithLLM: NSObject {
         
         // Only send first 20 rows to LLM to avoid context window issues
         let lines = csv.split(separator: "\n")
-        let headerLines = lines.prefix(5) // Comments and header
-        let dataLines = lines.dropFirst(5).prefix(20) // First 20 data rows
+        let headerLines = Array(lines.prefix(5)) // Comments and header
+        let dataLines = Array(lines.dropFirst(5).prefix(20)) // First 20 data rows
         let sampleCSV = (headerLines + dataLines).joined(separator: "\n")
         
         let prompt = Prompt {
@@ -420,8 +420,10 @@ class DocumentRecognizerWithLLM: NSObject {
             let correctedSample = response.content
             
             // Replace the sample rows with corrected ones
-            let remainingLines = lines.dropFirst(25) // Rows after the sample
-            let correctedCSV = (headerLines + correctedSample.split(separator: "\n") + remainingLines).joined(separator: "\n")
+            let remainingLines = Array(lines.dropFirst(25)) // Rows after the sample
+            let correctedLines = correctedSample.split(separator: "\n").map { String($0) }
+            let finalLines = headerLines.map { String($0) } + correctedLines + remainingLines.map { String($0) }
+            let correctedCSV = finalLines.joined(separator: "\n")
             
             return correctedCSV
         } catch {
