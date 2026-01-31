@@ -19,7 +19,6 @@ import * as LegacyFileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { DualImageRecognizer } from 'react-native-vision-camera-ocr';
 
-
 // Model definitions
 interface ModelConfig {
   id: string;
@@ -93,6 +92,7 @@ export default function HybridFlightLogExtractor() {
   const [status, setStatus] = useState('');
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<any>(null);
+  const [result2, setResult2] = useState<any>(null);
   const [modelReady, setModelReady] = useState(false);
   const [downloadedModels, setDownloadedModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<ModelConfig | null>(null);
@@ -105,14 +105,16 @@ export default function HybridFlightLogExtractor() {
 
   useEffect(() => {
     checkAndLoadModel();
-    
+
     // Monitor app state changes
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'background' && processingRef.current) {
         console.log('[Background] App moved to background during processing');
         setBackgroundWarning(true);
       } else if (nextAppState === 'active' && processingRef.current) {
-        console.log('[Background] App returned to foreground, processing continues');
+        console.log(
+          '[Background] App returned to foreground, processing continues'
+        );
         setBackgroundWarning(false);
       }
     });
@@ -128,7 +130,7 @@ export default function HybridFlightLogExtractor() {
       setStatus('Checking models...');
 
       const modelsDir = new Directory(Paths.document, 'models');
-      
+
       // Create directory only if it doesn't exist
       if (!modelsDir.exists) {
         await modelsDir.create();
@@ -207,7 +209,7 @@ export default function HybridFlightLogExtractor() {
   ): Promise<boolean> => {
     try {
       const modelsDir = new Directory(Paths.document, 'models');
-      
+
       // Create directory only if it doesn't exist
       if (!modelsDir.exists) {
         await modelsDir.create();
@@ -363,6 +365,7 @@ export default function HybridFlightLogExtractor() {
     processingRef.current = true;
     setProgress(0);
     setResult(null);
+    setResult2(null);
     setBackgroundWarning(false);
 
     try {
@@ -377,6 +380,22 @@ export default function HybridFlightLogExtractor() {
         rightUri: rightImage,
       });
       const ocrDuration = ((Date.now() - ocrStartTime) / 1000).toFixed(1);
+
+      // Log raw OCR results
+      console.log('========== RAW OCR RESULTS ==========');
+      console.log('LEFT PAGE:');
+      console.log(JSON.stringify(ocrResult.leftTable, null, 2));
+      console.log('\nRIGHT PAGE:');
+      console.log(JSON.stringify(ocrResult.rightTable, null, 2));
+      console.log('\nLEFT CELL DATA (first 20):');
+      console.log(
+        JSON.stringify(ocrResult.cellData.left.slice(0, 20), null, 2)
+      );
+      console.log('\nRIGHT CELL DATA (first 20):');
+      console.log(
+        JSON.stringify(ocrResult.cellData.right.slice(0, 20), null, 2)
+      );
+      console.log('=====================================\n');
 
       console.log(`[Process] OCR complete in ${ocrDuration}s:`, {
         leftCells: ocrResult.cellData.left.length,
@@ -393,6 +412,9 @@ export default function HybridFlightLogExtractor() {
       setProgress(30);
 
       const ocrSummary = formatOCRForLLM(ocrResult);
+      console.log('========== FORMATTED OCR FOR LLM ==========');
+      console.log(ocrSummary);
+      console.log('===========================================\n');
       console.log(`[Process] OCR summary length: ${ocrSummary.length} chars`);
 
       // Step 3: Run LLM extraction
@@ -405,50 +427,67 @@ export default function HybridFlightLogExtractor() {
 OCR BOUNDING BOX DATA (showing table structure and cell positions):
 ${ocrSummary}
 
-INSTRUCTIONS:
-1. Use the bounding box data to understand row and column positions
-2. For each row, extract data from BOTH left and right pages
-3. Match rows by their physical position (row number)
-4. Handle empty cells correctly using spatial information
-5. Apply OCR error corrections as specified above
-6. Validate that time columns sum correctly
+CRITICAL INSTRUCTIONS:
+1. Extract data from ALL ${ocrResult.leftTable.rowCount - 1} flight rows (excluding header row)
+2. Process EVERY row from row 1 to row ${ocrResult.leftTable.rowCount - 1}
+3. Do NOT skip rows - even if a row appears empty, include it with empty/null values
+4. Use the bounding box data to understand row and column positions
+5. For each row, extract data from BOTH left and right pages
+6. Match rows by their physical position (row number)
+7. Handle empty cells correctly using spatial information
+8. Apply OCR error corrections as specified above
+9. Validate that time columns sum correctly
+10. Skip ONLY the summary rows at bottom (TOTALS THIS PAGE, AMT. FORWARDED, TOTALS TO DATE)
 
-Return ONLY a JSON array with one object per flight entry. Each object should have these fields:
+IMPORTANT: For each field you extract, provide:
+- value: The extracted value
+- confidence: Your confidence level (0.0-1.0)
+- reasoning: Brief explanation of why you chose this value (e.g., "OCR read '2|8' in column 4, converted to 2.8", "Empty cell at row 3 col 5", "Corrected LB25 to LR25 per rules")
+
+EXPECTED OUTPUT: A JSON array with ${ocrResult.leftTable.rowCount - 1} objects (one per flight row).
+
+Return ONLY a JSON array with one object per flight entry. Each object should have this structure:
 {
-  "date": "MM-DD-YYYY",
-  "aircraft": "aircraft make/model",
-  "ident": "N-number",
-  "route": "FROM-TO",
-  "totalDuration": 0.0,
-  "sel": 0.0,
-  "ses": 0.0,
-  "mel": 0.0,
-  "turbojet": 0.0,
-  "turboprop": 0.0,
-  "heli": 0.0,
-  "glider": 0.0,
-  "landingsDay": 0,
-  "landingsNight": 0,
-  "night": 0.0,
-  "actualInstrument": 0.0,
-  "simulatedInstrument": 0.0,
-  "appNo": 0,
-  "appType": "",
-  "flightSim": 0.0,
-  "crossCountry": 0.0,
-  "solo": 0.0,
-  "pic": 0.0,
-  "sic": 0.0,
-  "dual": 0.0,
-  "cfi": 0.0,
-  "remarks": ""
+  "date": {"value": "MM-DD-YYYY", "confidence": 0.95, "reasoning": "OCR read clearly"},
+  "aircraft": {"value": "LR25", "confidence": 0.9, "reasoning": "Corrected from LB25"},
+  "ident": {"value": "N123AB", "confidence": 1.0, "reasoning": "Clear OCR"},
+  "route": {"value": "HOU-DFW", "confidence": 0.85, "reasoning": "Combined FROM-TO"},
+  "totalDuration": {"value": 2.8, "confidence": 0.95, "reasoning": "OCR '2|8' = 2.8"},
+  "sel": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
+  "ses": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
+  "mel": {"value": 2.8, "confidence": 0.95, "reasoning": "Matches total, multi-engine aircraft"},
+  "turbojet": {"value": 2.8, "confidence": 0.9, "reasoning": "LR25 is jet, matches total"},
+  "turboprop": {"value": 0.0, "confidence": 1.0, "reasoning": "LR25 is jet not turboprop"},
+  "heli": {"value": 0.0, "confidence": 1.0, "reasoning": "Not helicopter"},
+  "glider": {"value": 0.0, "confidence": 1.0, "reasoning": "Not glider"},
+  "landingsDay": {"value": 2, "confidence": 0.9, "reasoning": "Left side of LNDGS cell"},
+  "landingsNight": {"value": 1, "confidence": 0.9, "reasoning": "Right side of LNDGS cell"},
+  "night": {"value": 1.4, "confidence": 0.95, "reasoning": "OCR '1|4' = 1.4"},
+  "actualInstrument": {"value": 0.2, "confidence": 0.85, "reasoning": "OCR '|2' = 0.2 (tenths only)"},
+  "simulatedInstrument": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
+  "appNo": {"value": 1, "confidence": 0.9, "reasoning": "Single digit in narrow column"},
+  "appType": {"value": "ILS", "confidence": 0.95, "reasoning": "Text code in APP TYPE column"},
+  "flightSim": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
+  "crossCountry": {"value": 2.8, "confidence": 0.95, "reasoning": "Matches total for XC flight"},
+  "solo": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
+  "pic": {"value": 2.8, "confidence": 0.95, "reasoning": "Matches total, pilot in command"},
+  "sic": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
+  "dual": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
+  "cfi": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
+  "remarks": {"value": "91-135", "confidence": 0.9, "reasoning": "FAR reference in remarks column"}
 }
 
-Return ONLY the JSON array, no explanations or markdown.`;
+REMINDER: Extract ALL ${ocrResult.leftTable.rowCount - 1} flight rows. Do not stop after the first row!
+
+Return ONLY the JSON array, no explanations or markdown code fences.`;
+
+      console.log('========== FULL PROMPT TO LLM ==========');
+      console.log(prompt);
+      console.log('========================================\n');
 
       console.log(`[Process] Prompt length: ${prompt.length} chars`);
       console.log('[Process] Starting LLM completion...');
-      
+
       let tokenCount = 0;
       let lastLogTime = Date.now();
       const llmStartTime = Date.now();
@@ -465,7 +504,7 @@ Return ONLY the JSON array, no explanations or markdown.`;
               ],
             },
           ],
-          n_predict: 4000,
+          n_predict: 8000,
           temperature: 0.1,
           stop: ['</s>', '\n\n\n'],
         },
@@ -473,16 +512,23 @@ Return ONLY the JSON array, no explanations or markdown.`;
           // Progress callback - called for each token generated
           if (data.token) {
             tokenCount++;
-            const progressPercent = 50 + Math.min((tokenCount / 4000) * 45, 45);
+            const progressPercent = 50 + Math.min((tokenCount / 8000) * 45, 45);
             setProgress(progressPercent);
-            
+
             // Log every 50 tokens or every 5 seconds
             const now = Date.now();
             if (tokenCount % 50 === 0 || now - lastLogTime > 5000) {
               const elapsed = ((now - llmStartTime) / 1000).toFixed(1);
-              const tokensPerSec = (tokenCount / (now - llmStartTime) * 1000).toFixed(1);
-              console.log(`[Process] LLM progress: ${tokenCount} tokens in ${elapsed}s (${tokensPerSec} tok/s)`);
-              setStatus(`Generating... ${tokenCount} tokens (${tokensPerSec} tok/s)`);
+              const tokensPerSec = (
+                (tokenCount / (now - llmStartTime)) *
+                1000
+              ).toFixed(1);
+              console.log(
+                `[Process] LLM progress: ${tokenCount} tokens in ${elapsed}s (${tokensPerSec} tok/s)`
+              );
+              setStatus(
+                `Generating... ${tokenCount} tokens (${tokensPerSec} tok/s)`
+              );
               lastLogTime = now;
             }
           }
@@ -490,8 +536,17 @@ Return ONLY the JSON array, no explanations or markdown.`;
       );
 
       const llmDuration = ((Date.now() - llmStartTime) / 1000).toFixed(1);
-      const avgTokensPerSec = (tokenCount / (Date.now() - llmStartTime) * 1000).toFixed(1);
-      console.log(`[Process] LLM complete in ${llmDuration}s: ${tokenCount} tokens (${avgTokensPerSec} tok/s avg)`);
+      const avgTokensPerSec = (
+        (tokenCount / (Date.now() - llmStartTime)) *
+        1000
+      ).toFixed(1);
+      console.log(
+        `[Process] LLM complete in ${llmDuration}s: ${tokenCount} tokens (${avgTokensPerSec} tok/s avg)`
+      );
+
+      console.log('========== RAW LLM OUTPUT ==========');
+      console.log(completion.text);
+      console.log('====================================\n');
       console.log(`[Process] Output length: ${completion.text.length} chars`);
 
       setProgress(95);
@@ -500,17 +555,155 @@ Return ONLY the JSON array, no explanations or markdown.`;
 
       // Parse LLM output
       const extracted = parseModelOutput(completion.text);
+
+      console.log('========== EXTRACTED FLIGHT ENTRIES ==========');
+      console.log(JSON.stringify(extracted, null, 2));
+      console.log('==============================================\n');
       console.log(`[Process] Extracted ${extracted.length} flight entries`);
+
+      // Parse and log CSV
+      const csv1 = parseAndLogCSV(extracted, 'PROMPT 1');
 
       setResult({
         ocrData: ocrResult,
         extractedFlights: extracted,
         rawLLMOutput: completion.text,
+        csv: csv1,
+      });
+
+      setProgress(50);
+      setStatus(`First extraction complete! Now trying alternative prompt...`);
+      console.log(
+        '[Process] First extraction complete! Starting second extraction with alternative prompt...'
+      );
+
+      // ========== SECOND LLM CALL WITH ALTERNATIVE PROMPT ==========
+
+      // Load alternative prompt from prompt.txt
+      console.log('[Process] Loading alternative prompt from prompt.txt...');
+      const promptFile = new File(Paths.bundle, 'prompt.txt');
+      const alternativePromptJson = await promptFile.text();
+
+      // Build alternative prompt with OCR data
+      const alternativePrompt = `${alternativePromptJson}
+
+OCR BOUNDING BOX DATA (showing table structure and cell positions):
+${ocrSummary}
+
+CRITICAL INSTRUCTIONS:
+1. Extract data from ALL ${ocrResult.leftTable.rowCount - 1} flight rows (excluding header row)
+2. Process EVERY row from row 1 to row ${ocrResult.leftTable.rowCount - 1}
+3. Do NOT skip rows - even if a row appears empty, include it with empty/null values
+4. Use the bounding box data to understand row and column positions
+5. For each row, extract data from BOTH left and right pages
+6. Match rows by their physical position (row number)
+
+IMPORTANT: For each field you extract, provide:
+- value: The extracted value
+- confidence: Your confidence level (0.0-1.0)
+- reasoning: Brief explanation of why you chose this value
+
+EXPECTED OUTPUT: A JSON array with ${ocrResult.leftTable.rowCount - 1} objects (one per flight row).
+
+REMINDER: Extract ALL ${ocrResult.leftTable.rowCount - 1} flight rows. Do not stop after the first row!
+
+Return ONLY the JSON array, no explanations or markdown code fences.`;
+
+      console.log('========== ALTERNATIVE PROMPT TO LLM ==========');
+      console.log(alternativePrompt);
+      console.log('===============================================\n');
+
+      let tokenCount2 = 0;
+      let lastLogTime2 = Date.now();
+      const llmStartTime2 = Date.now();
+
+      const completion2 = await contextRef.current!.completion(
+        {
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: alternativePrompt },
+                { type: 'image_url', image_url: { url: leftImage } },
+                { type: 'image_url', image_url: { url: rightImage } },
+              ],
+            },
+          ],
+          n_predict: 8000,
+          temperature: 0.1,
+          stop: ['</s>', '\n\n\n'],
+        },
+        (data) => {
+          if (data.token) {
+            tokenCount2++;
+            const progressPercent =
+              50 + Math.min((tokenCount2 / 8000) * 45, 45);
+            setProgress(progressPercent);
+
+            const now = Date.now();
+            if (tokenCount2 % 50 === 0 || now - lastLogTime2 > 5000) {
+              const elapsed = ((now - llmStartTime2) / 1000).toFixed(1);
+              const tokensPerSec = (
+                (tokenCount2 / (now - llmStartTime2)) *
+                1000
+              ).toFixed(1);
+              console.log(
+                `[Process] LLM2 progress: ${tokenCount2} tokens in ${elapsed}s (${tokensPerSec} tok/s)`
+              );
+              setStatus(
+                `Generating (Alt)... ${tokenCount2} tokens (${tokensPerSec} tok/s)`
+              );
+              lastLogTime2 = now;
+            }
+          }
+        }
+      );
+
+      const llmDuration2 = ((Date.now() - llmStartTime2) / 1000).toFixed(1);
+      const avgTokensPerSec2 = (
+        (tokenCount2 / (Date.now() - llmStartTime2)) *
+        1000
+      ).toFixed(1);
+      console.log(
+        `[Process] LLM2 complete in ${llmDuration2}s: ${tokenCount2} tokens (${avgTokensPerSec2} tok/s avg)`
+      );
+
+      console.log('========== RAW LLM OUTPUT (ALTERNATIVE) ==========');
+      console.log(completion2.text);
+      console.log('==================================================\n');
+
+      setProgress(95);
+      setStatus('Parsing alternative results...');
+      console.log('[Process] Parsing alternative LLM output...');
+
+      const extracted2 = parseModelOutput(completion2.text);
+
+      console.log(
+        '========== EXTRACTED FLIGHT ENTRIES (ALTERNATIVE) =========='
+      );
+      console.log(JSON.stringify(extracted2, null, 2));
+      console.log(
+        '============================================================\n'
+      );
+      console.log(
+        `[Process] Extracted ${extracted2.length} flight entries from alternative prompt`
+      );
+
+      // Parse and log CSV for second prompt
+      const csv2 = parseAndLogCSV(extracted2, 'PROMPT 2');
+
+      setResult2({
+        ocrData: ocrResult,
+        extractedFlights: extracted2,
+        rawLLMOutput: completion2.text,
+        csv: csv2,
       });
 
       setProgress(100);
-      setStatus(`Complete! ${extracted.length} flights extracted`);
-      console.log('[Process] Processing complete!');
+      setStatus(
+        `Complete! Prompt 1: ${extracted.length} flights | Prompt 2: ${extracted2.length} flights`
+      );
+      console.log('[Process] Both extractions complete!');
     } catch (error: any) {
       console.error('[Process] ERROR:', error);
       Alert.alert('Error', error.message);
@@ -567,7 +760,19 @@ Return ONLY the JSON array, no explanations or markdown.`;
 
   const parseModelOutput = (text: string): any[] => {
     try {
-      const jsonMatch = text.match(/\[[\s\S]*?\]/);
+      // Remove markdown code fences if present
+      let cleanedText = text.trim();
+      if (cleanedText.startsWith('```json')) {
+        cleanedText = cleanedText.replace(/^```json\s*/, '');
+      }
+      if (cleanedText.startsWith('```')) {
+        cleanedText = cleanedText.replace(/^```\s*/, '');
+      }
+      if (cleanedText.endsWith('```')) {
+        cleanedText = cleanedText.replace(/\s*```$/, '');
+      }
+
+      const jsonMatch = cleanedText.match(/\[[\s\S]*?\]/);
       if (jsonMatch) {
         return JSON.parse(jsonMatch[0]);
       }
@@ -585,6 +790,88 @@ Return ONLY the JSON array, no explanations or markdown.`;
       const file = new File(Paths.cache, `flight-log-${Date.now()}.csv`);
       await file.write(csv);
       await Sharing.shareAsync(file.uri);
+    } catch (error: any) {
+      Alert.alert('Error', error.message);
+    }
+  };
+
+  const shareDetailedResults = async () => {
+    if (!result) return;
+
+    try {
+      // Create comprehensive report
+      let report = '========== FLIGHT LOG EXTRACTION REPORT ==========\n\n';
+
+      report += '=== SUMMARY ===\n';
+      report += `Extraction Date: ${new Date().toLocaleString()}\n`;
+      report += `Prompt 1 Flights: ${result.extractedFlights.length}\n`;
+      if (result2) {
+        report += `Prompt 2 Flights: ${result2.extractedFlights.length}\n`;
+      }
+      report += `OCR Cells Detected: ${result.ocrData.metadata.totalCells}\n`;
+      report += `Left Page Columns: ${result.ocrData.leftTable.columnCount}\n`;
+      report += `Right Page Columns: ${result.ocrData.rightTable.columnCount}\n\n`;
+
+      report += '=== RAW OCR RESULTS ===\n';
+      report += 'LEFT PAGE STRUCTURE:\n';
+      report += JSON.stringify(result.ocrData.leftTable, null, 2) + '\n\n';
+      report += 'RIGHT PAGE STRUCTURE:\n';
+      report += JSON.stringify(result.ocrData.rightTable, null, 2) + '\n\n';
+
+      report += 'LEFT PAGE CELLS (first 30):\n';
+      report +=
+        JSON.stringify(result.ocrData.cellData.left.slice(0, 30), null, 2) +
+        '\n\n';
+      report += 'RIGHT PAGE CELLS (first 30):\n';
+      report +=
+        JSON.stringify(result.ocrData.cellData.right.slice(0, 30), null, 2) +
+        '\n\n';
+
+      report += '========== PROMPT 1: CURRENT SYSTEM PROMPT ==========\n\n';
+
+      report += '=== EXTRACTED FLIGHTS WITH REASONING (PROMPT 1) ===\n';
+      result.extractedFlights.forEach((flight: any, idx: number) => {
+        report += `\nFlight ${idx + 1}:\n`;
+        report += JSON.stringify(flight, null, 2) + '\n';
+      });
+      report += '\n';
+
+      report += '=== RAW LLM OUTPUT (PROMPT 1) ===\n';
+      report += result.rawLLMOutput + '\n\n';
+
+      report += '=== CSV FORMAT (PROMPT 1) ===\n';
+      report += convertToCSV(result.extractedFlights) + '\n';
+
+      if (result2) {
+        report +=
+          '\n========== PROMPT 2: ALTERNATIVE (prompt.txt) ==========\n\n';
+
+        report += '=== EXTRACTED FLIGHTS WITH REASONING (PROMPT 2) ===\n';
+        result2.extractedFlights.forEach((flight: any, idx: number) => {
+          report += `\nFlight ${idx + 1}:\n`;
+          report += JSON.stringify(flight, null, 2) + '\n';
+        });
+        report += '\n';
+
+        report += '=== RAW LLM OUTPUT (PROMPT 2) ===\n';
+        report += result2.rawLLMOutput + '\n\n';
+
+        report += '=== CSV FORMAT (PROMPT 2) ===\n';
+        report += convertToCSV(result2.extractedFlights) + '\n';
+      }
+
+      report += '========== END REPORT ==========\n';
+
+      // Save to file and share
+      const file = new File(
+        Paths.cache,
+        `flight-log-comparison-${Date.now()}.txt`
+      );
+      await file.write(report);
+      await Sharing.shareAsync(file.uri, {
+        mimeType: 'text/plain',
+        dialogTitle: 'Share Flight Log Comparison Report',
+      });
     } catch (error: any) {
       Alert.alert('Error', error.message);
     }
@@ -627,11 +914,45 @@ Return ONLY the JSON array, no explanations or markdown.`;
     flights.forEach((flight) => {
       const row = headers.map((h) => {
         const key = h.toLowerCase().replace(/_/g, '');
-        return flight[key] || '';
+        // Handle nested structure with reasoning (e.g., {value: "...", confidence: 0.9, reasoning: "..."})
+        const fieldData = flight[key];
+        if (
+          fieldData &&
+          typeof fieldData === 'object' &&
+          'value' in fieldData
+        ) {
+          // Extract value from nested structure
+          const val = fieldData.value;
+          // Escape commas and quotes in CSV
+          if (
+            typeof val === 'string' &&
+            (val.includes(',') || val.includes('"'))
+          ) {
+            return `"${val.replace(/"/g, '""')}"`;
+          }
+          return val ?? '';
+        }
+        // Handle simple value
+        const val = fieldData;
+        if (
+          typeof val === 'string' &&
+          (val.includes(',') || val.includes('"'))
+        ) {
+          return `"${val.replace(/"/g, '""')}"`;
+        }
+        return val ?? '';
       });
       csv += row.join(',') + '\n';
     });
 
+    return csv;
+  };
+
+  const parseAndLogCSV = (flights: any[], promptLabel: string): string => {
+    const csv = convertToCSV(flights);
+    console.log(`========== CSV OUTPUT (${promptLabel}) ==========`);
+    console.log(csv);
+    console.log('==============================================\n');
     return csv;
   };
 
@@ -651,7 +972,8 @@ Return ONLY the JSON array, no explanations or markdown.`;
       {backgroundWarning && (
         <View style={styles.backgroundWarning}>
           <Text style={styles.backgroundWarningText}>
-            ⚠️ App is in background. Processing may be slower or paused. Keep app in foreground for best performance.
+            ⚠️ App is in background. Processing may be slower or paused. Keep
+            app in foreground for best performance.
           </Text>
         </View>
       )}
@@ -727,16 +1049,26 @@ Return ONLY the JSON array, no explanations or markdown.`;
 
       {result && (
         <View style={styles.resultsSection}>
-          <Text style={styles.resultsTitle}>Results</Text>
+          <Text style={styles.resultsTitle}>Results - Comparison</Text>
 
           <View style={styles.statsCard}>
             <Text style={styles.statsText}>
-              Flights extracted: {result.extractedFlights.length}
+              Prompt 1 (Current): {result.extractedFlights.length} flights
             </Text>
+            {result2 && (
+              <Text style={styles.statsText}>
+                Prompt 2 (Alternative): {result2.extractedFlights.length}{' '}
+                flights
+              </Text>
+            )}
             <Text style={styles.statsText}>
               OCR cells detected: {result.ocrData.metadata.totalCells}
             </Text>
           </View>
+
+          <Text style={styles.sectionTitle}>
+            📋 Prompt 1: Current System Prompt
+          </Text>
 
           <View style={styles.dataPreview}>
             <Text style={styles.previewTitle}>
@@ -756,9 +1088,76 @@ Return ONLY the JSON array, no explanations or markdown.`;
             </ScrollView>
           </View>
 
-          <TouchableOpacity style={styles.shareButton} onPress={shareResults}>
-            <Text style={styles.shareButtonText}>📤 Share CSV</Text>
-          </TouchableOpacity>
+          {result.csv && (
+            <View style={styles.dataPreview}>
+              <Text style={styles.previewTitle}>
+                CSV Format (first 5 rows):
+              </Text>
+              <ScrollView style={styles.previewScroll}>
+                <Text style={styles.previewText}>
+                  {result.csv.split('\n').slice(0, 6).join('\n')}
+                </Text>
+              </ScrollView>
+            </View>
+          )}
+
+          {result2 && (
+            <>
+              <Text style={styles.sectionTitle}>
+                📋 Prompt 2: Alternative (prompt.txt)
+              </Text>
+
+              <View style={styles.dataPreview}>
+                <Text style={styles.previewTitle}>
+                  Extracted Flights (first 3):
+                </Text>
+                <ScrollView style={styles.previewScroll}>
+                  <Text style={styles.previewText}>
+                    {JSON.stringify(
+                      result2.extractedFlights.slice(0, 3),
+                      null,
+                      2
+                    )}
+                  </Text>
+                </ScrollView>
+              </View>
+
+              <View style={styles.dataPreview}>
+                <Text style={styles.previewTitle}>Raw LLM Output:</Text>
+                <ScrollView style={styles.previewScroll}>
+                  <Text style={styles.previewText}>{result2.rawLLMOutput}</Text>
+                </ScrollView>
+              </View>
+
+              {result2.csv && (
+                <View style={styles.dataPreview}>
+                  <Text style={styles.previewTitle}>
+                    CSV Format (first 5 rows):
+                  </Text>
+                  <ScrollView style={styles.previewScroll}>
+                    <Text style={styles.previewText}>
+                      {result2.csv.split('\n').slice(0, 6).join('\n')}
+                    </Text>
+                  </ScrollView>
+                </View>
+              )}
+            </>
+          )}
+
+          <View style={styles.shareButtonsRow}>
+            <TouchableOpacity
+              style={[styles.shareButton, styles.shareButtonHalf]}
+              onPress={shareResults}
+            >
+              <Text style={styles.shareButtonText}>📤 CSV (P1)</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.shareButton, styles.shareButtonHalf]}
+              onPress={shareDetailedResults}
+            >
+              <Text style={styles.shareButtonText}>📋 Full Report</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
 
@@ -972,6 +1371,13 @@ const styles = StyleSheet.create({
     color: '#4CAF50',
     marginBottom: 16,
   },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#FF9800',
+    marginTop: 20,
+    marginBottom: 12,
+  },
   statsCard: {
     backgroundColor: '#2a2a2a',
     borderRadius: 8,
@@ -1008,6 +1414,13 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: 8,
     alignItems: 'center',
+  },
+  shareButtonsRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  shareButtonHalf: {
+    flex: 1,
   },
   shareButtonText: {
     color: 'white',

@@ -1,0 +1,120 @@
+{
+	"description": "Flight log pages with 2 facing pages in landscape. Left page has aircraft info and durations. Right page has conditions and piloting time. Extract row-by-row matching positions.",
+	"definitions": {
+		"Aircraft Info and Durations": {
+			"properties": {
+				"Date": {
+					"instruction": "Extract date from DATE column first cell of each row. Format MM-DD-YYYY. Year from header YEAR XX means 19XX or 20XX. CRITICAL: 9/10 means September 10 (09-10), NOT August. Read the month digit carefully before the slash."
+				},
+				"Aircraft Make and Model": {
+					"instruction": "Extract from AIRCRAFT MAKE AND MODEL column. Standardize OCR errors: LB25/LA25/LR-25=LR25, BEZAY/BENZOO/BE-Z-O/8E-200/BE-210/BE200=BE-200, IAILY/IAI24/IAIZ4/IAI124=IA1124, DAZO-AI/DA20-AI=DA20-A1. Keep C172/PA28/PA44/SR22/PA38 as-is."
+				},
+				"Aircraft Identifier": {
+					"instruction": "Extract aircraft identifiers from the AIRCRAFT IDENT or IDENT column for each flight entry row, carefully distinguishing between similar characters (0/O, 8/B, Q/0)."
+				},
+				"From-To": {
+					"instruction": "Extract route from FROM and TO columns for this row. Combine with hyphens. 3-letter airport codes. Multi-leg routes may span multiple lines within cell. Mexican airports: MMAN, MMSO, MMGT."
+				},
+				"Total Duration of Flight": {
+					"instruction": "Extract from TOTAL DURATION OF FLIGHT columns. Two sub-columns: hours|tenths. Slashed zero should convert to zero, not 6 (∅,Ø,ø,⌀=0). Combine as decimal: 2|8=2.8, 4|2=4.2, 1|7=1.7, 2|∅=2.0, |6=0.6, 9|=0.9. Return single decimal number. Should match one or more Aircraft durations."
+				},
+				"Single-Engine Land": {
+					"instruction": "Extract values from the AIRPLANE SINGLE- ENGINE LAND columns only. Return empty string if empty."
+				},
+				"Single-Engine Sea": {
+					"instruction": "Extract from AIRPLANE SINGLE- ENGINE SEA columns only. Return empty string if empty."
+				},
+				"Multi-Engine Land": {
+					"instruction": "Extract flight durations from the AIRPLANE MULTI-ENGINE LAND column for aircraft types PA44, LR25, BE-200, IA1124, BE58, C310. Return values with correct decimal format. Use empty strings for single-engine entries."
+				},
+				"Turbojet": {
+					"instruction": "Extract turbojet time ONLY for: LR25, LR-25, IA1124, IAI124. These are jets. CRITICAL: BE-200 is TURBOPROP not turbojet - return empty for BE-200. Return empty for all piston aircraft (PA44, C172, PA28)."
+				},
+				"Rotorcraft helicopter": {
+					"instruction": "Extract from ROTORCRAFT HELICOPTER column. Only for R22, R44, B206, EC135 helicopter types. Return empty string for fixed-wing aircraft."
+				},
+				"Glider": {
+					"instruction": "Extract from GLIDER column. Only for glider/sailplane aircraft. Return empty string for powered aircraft."
+				},
+				"Turboprop": {
+					"instruction": "Extract turboprop time ONLY for: BE-200, BE200, BE-210, PC12, TBM, C208, King Air. CRITICAL: LR25 and IA1124 are JETS not turboprops - return empty for these. Return empty for piston aircraft."
+				},
+				"Landings Day": {
+					"instruction": "Extract from DAY column under LNDGS or LANDINGS section. The LNDGS section has TWO narrow sub-columns side by side: DAY (left) and NIGHT (right). CRITICAL POSITIONING: Look at where the digit is physically written within the LNDGS box for this row. If the digit is on the LEFT side of the LNDGS cell, it is a Day landing. If the digit is on the RIGHT side of the LNDGS cell, it belongs in Landings Night, NOT here. CRITICAL: When only ONE number appears in the LNDGS area for a row, you MUST determine if it is left-aligned (Day) or right-aligned (Night) within that cell. Do NOT default to Day. Compare horizontal position to other rows to determine alignment. Integer count. Return empty string if blank or if the digit is right-aligned (Night)."
+				},
+				"Landings Night": {
+					"instruction": "Extract from NIGHT column under LNDGS or LANDINGS section. The LNDGS section has TWO narrow sub-columns side by side: DAY (left) and NIGHT (right). CRITICAL POSITIONING: Look at where the digit is physically written within the LNDGS box for this row. If the digit is on the RIGHT side of the LNDGS cell, it is a Night landing and belongs here. CRITICAL: When only ONE number appears in the LNDGS area for a row, you MUST determine if it is left-aligned (Day) or right-aligned (Night) within that cell. Compare horizontal position to other rows where both Day and Night values exist to calibrate column boundaries. Integer count. Return empty string if blank or if the digit is left-aligned (Day)."
+				},
+				"Row #": {
+					"instruction": "Sequential row number 1-14 for flight entries. Exclude summary rows: TOTALS THIS PAGE, AMT. FORWARDED, TOTALS TO DATE."
+				}
+			}
+		},
+		"Conditions and Piloting": {
+			"properties": {
+				"Night Flight": {
+					"instruction": "Extract from NIGHT sub-column under CONDITIONS OF FLIGHT section (FAR LEFT columns 1-2 of right page). STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. Row 5 means the 5th grid line down from header. Do NOT skip empty rows. Two sub-columns: hours|tenths. Slashed zero = 0. Return empty string if the cell at this row position is blank."
+				},
+				"Actual Instrument": {
+					"instruction": "Extract from ACTUAL INSTRUMENT sub-column under CONDITIONS OF FLIGHT section (columns 3-4). STRICT COLUMN POSITION: Immediately RIGHT of NIGHT column. STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. CRITICAL DECIMAL FORMAT: The format is hours|tenths as two separate sub-columns. A single digit in the TENTHS column (right sub-column) with nothing in the HOURS column (left sub-column) means 0.X hours. Example: |2 = 0.2 (not 2.0). If you see only one digit, check which sub-column it is in - if it's in the RIGHT sub-column, prepend '0.' to get values like 0.2, 0.3, etc. Slashed zero = 0. Return empty string for blank cells."
+				},
+				"Simulated Instrument Hood": {
+					"instruction": "Extract from SIMULATED INSTRUMENT (HOOD) sub-column under CONDITIONS OF FLIGHT section (columns 5-6). STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. This column is INDEPENDENT of other columns. Two sub-columns: hours|tenths. Slashed zero = 0. Return empty string for blank cells."
+				},
+				"App No.": {
+					"instruction": "Extract approach count from NO. sub-column under APP column (column 7). STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. CRITICAL COLUMN IDENTIFICATION: APP NO. is a NARROW single-digit column located BEFORE the APP TYPE column. It contains only single integers 1-9 representing approach counts. CRITICAL: Do NOT confuse with flight time values. If you see a decimal number like 3.0, 2.6, 5.5 etc., that is NOT an approach count - those are flight times from PIC/SIC columns. App counts are single digits only (1, 2, 3, etc.) with no decimal component. Return empty string if blank or if the value appears to be a flight time."
+				},
+				"App Type": {
+					"instruction": "Extract TYPE sub-column under APP column (column 8). STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. CRITICAL COLUMN IDENTIFICATION: APP TYPE contains text codes like ILS, VOR, GPS, LOC, T, V, L. CRITICAL: Do NOT confuse with numeric values. A '0' by itself is likely a tenths digit from an adjacent time column, not an approach type. Valid approach types are alphabetic codes. If App No. is empty for this row, App Type should also be empty. Return empty string if blank or if the value appears numeric."
+				},
+				"Flight Simulator": {
+					"instruction": "Extract from FLIGHT SIMULATOR column (columns 9-10). Located between APP TYPE and CROSS COUNTRY. STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. Rarely used - only for simulator time, not actual flight. Two sub-columns: hours|tenths. Slashed zero = 0. Return empty string if blank."
+				},
+				"Cross Country": {
+					"instruction": "Extract from CROSS COUNTRY column under TYPE OF PILOTING TIME section (columns 11-12). STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. STRICT COLUMN POSITION: This column is in the middle-right area of the page, NOT near the far right where PIC and As Flight Instructor are located. CAREFUL DECIMAL READING: Verify both hours and tenths sub-columns. Example: 1|5 = 1.5, 2|5 = 2.5. Two sub-columns: hours|tenths. Slashed zero = 0. Return empty string if blank."
+				},
+				"Solo": {
+					"instruction": "Extract from SOLO column under TYPE OF PILOTING TIME (columns 13-14). Located immediately RIGHT of CROSS COUNTRY. STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. Only student pilots typically have solo time. Two sub-columns: hours|tenths. Slashed zero = 0. Return empty string if blank. Do not default to zero."
+				},
+				"Pilot in Command": {
+					"instruction": "Extract from PILOT IN COMMAND column under TYPE OF PILOTING TIME section (columns 15-16). STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. COLUMN POSITION FROM RIGHT EDGE: Count columns from REMARKS leftward: REMARKS, AS FLIGHT INSTRUCTOR, DUAL RECEIVED, SECOND IN COMMAND, then PILOT IN COMMAND. PIC is the 5th column from the right edge. CRITICAL: PIC column is to the LEFT of SIC column. Values are decimal flight times like 1.7, 2.5, 3.3. Two sub-columns: hours|tenths. Slashed zero = 0. Return empty string if blank."
+				},
+				"Second in Command": {
+					"instruction": "Extract from SECOND IN COMMAND column under TYPE OF PILOTING TIME (columns 17-18). STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. COLUMN POSITION FROM RIGHT EDGE: Count columns from REMARKS leftward: REMARKS, AS FLIGHT INSTRUCTOR, DUAL RECEIVED, then SECOND IN COMMAND. SIC is the 4th column from the right edge. Located immediately RIGHT of PIC, LEFT of DUAL RECEIVED. CRITICAL FOR MULTI-CREW JETS: For LR25, IA1124 aircraft, the pilot often logs SIC time (not PIC) when serving as second in command. If Total Duration matches a value in this column position and PIC is empty, that value belongs in SIC. Values are decimal flight times like 2.8, 3.0, 4.2. Two sub-columns: hours|tenths. Slashed zero = 0. Return empty string if blank."
+				},
+				"Dual Received": {
+					"instruction": "Extract from DUAL RECEIVED column (columns 19-20). COLUMN POSITION FROM RIGHT EDGE: Count columns from REMARKS leftward: REMARKS, AS FLIGHT INSTRUCTOR, then DUAL RECEIVED. DUAL RECEIVED is the 3rd column from the right edge. Located immediately RIGHT of SIC, LEFT of AS FLIGHT INSTRUCTOR. STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. For time RECEIVING instruction as a student. Two sub-columns: hours|tenths. Slashed zero = 0. Return empty string if blank."
+				},
+				"As Flight Instructor": {
+					"instruction": "Extract from AS FLIGHT INSTRUCTOR column (columns 21-22). COLUMN POSITION FROM RIGHT EDGE: Count columns from REMARKS leftward: REMARKS, then AS FLIGHT INSTRUCTOR. AS FLIGHT INSTRUCTOR is the 2nd column from the right edge (last numeric column before REMARKS). STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. Two sub-columns: hours|tenths. Slashed zero = 0. Return empty string if blank."
+				},
+				"Remarks and endorsements": {
+					"instruction": "Extract from REMARKS AND ENDORSEMENTS column (rightmost column on the page). STRICT ROW ALIGNMENT: Count physical grid lines from the column header to this row number. Common patterns include flight rule sequences (91-135-91), passenger names, and destination notes. A ditto mark (") means same as row above - extract the ditto mark itself, do not copy the text from above. Exclude I certify statement."
+				},
+				"Row #": {
+					"instruction": "Sequential row number matching Aircraft Info section. Must align by row position on page."
+				}
+			}
+		}
+	},
+	"properties": {
+		"Year": {
+			"instruction": "Extract 4-digit year from YEAR in page header. YEAR 96 = 1996, YEAR 2003 = 2003. If 2-digit, prefix with 19 for 90-99, prefix with 20 for 00-23. Return as YYYY format."
+		},
+		"Aircraft Info and Durations": {
+			"instruction": "Extract left page flight data. One row per flight entry. Read each row independently - do not carry values from previous rows. Exclude TOTALS THIS PAGE, AMT. FORWARDED, TOTALS TO DATE summary rows.",
+			"items": {
+				"$ref": "#/definitions/Aircraft%20Info%20and%20Durations"
+			}
+		},
+		"Signature": {
+			"instruction": "Return TRUE if handwritten signature visible at page bottom near PILOTS SIGNATURE label. Look for cursive/script writing. Return FALSE if signature line empty."
+		},
+		"Conditions and Piloting": {
+			"instruction": "Extract right page data matching each left page row by position. Row count MUST equal Aircraft Info rows. CRITICAL ROW ALIGNMENT: For EACH row, count physical grid lines from the header independently for EVERY column. Row 5 is always the 5th grid line down, regardless of whether rows 1-4 have data in that column. Do NOT let empty cells cause you to skip rows or shift alignment. CRITICAL COLUMN IDENTIFICATION - READ RIGHT TO LEFT: To avoid column confusion, identify columns starting from the RIGHT edge of the page: 1) REMARKS (rightmost, contains text), 2) AS FLIGHT INSTRUCTOR (numeric, 2nd from right), 3) DUAL RECEIVED (numeric, 3rd from right), 4) SECOND IN COMMAND (numeric, 4th from right), 5) PILOT IN COMMAND (numeric, 5th from right), 6) SOLO (numeric, 6th from right), 7) CROSS COUNTRY (numeric, 7th from right). The APP NO. and APP TYPE columns are narrow columns in the middle-left area - they contain single digits and letter codes respectively, NOT decimal flight times. CRITICAL VALIDATION: For each row, PIC + SIC + Dual Received + As Flight Instructor + Solo MUST equal Total Duration from left page. DECIMAL READING: Single digit in tenths column = 0.X (e.g., |2 = 0.2, not 2.0). Exclude summary rows.",
+			"items": {
+				"$ref": "#/definitions/Conditions%20and%20Piloting"
+			}
+		}
+	}
+}
