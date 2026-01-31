@@ -85,6 +85,50 @@ You will receive OCR bounding boxes showing spatial layout. Use them to handle e
 
 Output JSON array with one object per flight row containing all fields.`;
 
+const ALTERNATIVE_PROMPT = `Extract flight log data from these 2 facing pages (left and right).
+
+LEFT PAGE columns (in order):
+1. DATE (M/D format, year from header)
+2. AIRCRAFT MAKE AND MODEL (e.g., LR25, BE-200, IA1124)
+3. AIRCRAFT IDENT (N-number)
+4. FROM-TO (airport codes with hyphens)
+5. TOTAL DURATION (hours.tenths, e.g., 2|8 = 2.8)
+6. SINGLE-ENGINE LAND (hours.tenths or empty)
+7. SINGLE-ENGINE SEA (hours.tenths or empty)
+8. MULTI-ENGINE LAND (hours.tenths or empty)
+9. TURBOJET (hours.tenths or empty - only for LR25, IA1124)
+10. ROTORCRAFT (hours.tenths or empty)
+11. GLIDER (hours.tenths or empty)
+12. TURBOPROP (hours.tenths or empty - only for BE-200, PC12)
+13. CUSTOM3 (usually empty)
+14. LANDINGS DAY (integer or empty)
+15. LANDINGS NIGHT (integer or empty)
+
+RIGHT PAGE columns (in order):
+16. NIGHT (hours.tenths or empty)
+17. ACTUAL INSTRUMENT (hours.tenths or empty - often small values like 0.2, 0.3)
+18. SIMULATED INSTRUMENT (hours.tenths or empty)
+19. APPROACHES (integer or empty)
+20. APPROACH TYPE (text like ILS, VOR, GPS or empty)
+21. FLIGHT SIMULATOR (hours.tenths or empty)
+22. CROSS COUNTRY (hours.tenths or empty)
+23. SOLO (hours.tenths or empty)
+24. PILOT IN COMMAND (hours.tenths or empty)
+25. SECOND IN COMMAND (hours.tenths or empty)
+26. DUAL RECEIVED (hours.tenths or empty)
+27. AS FLIGHT INSTRUCTOR (hours.tenths or empty)
+28. REMARKS (text or empty)
+
+CRITICAL RULES:
+- Read EACH cell independently - don't repeat values
+- Empty cells = empty string, not zero
+- Slashed zero (Ø) = 0
+- Format X|Y as X.Y (e.g., 2|8 = 2.8, |6 = 0.6)
+- Skip TOTALS rows at bottom
+- Extract 14 flight rows maximum
+
+Output JSON array with one object per row.`;
+
 export default function HybridFlightLogExtractor() {
   const [leftImage, setLeftImage] = useState<string | null>(null);
   const [rightImage, setRightImage] = useState<string | null>(null);
@@ -166,18 +210,28 @@ export default function HybridFlightLogExtractor() {
   const loadModel = async (model: ModelConfig) => {
     try {
       setStatus(`Loading ${model.name}...`);
+      console.log(`[Model] Loading ${model.name} (${model.id})...`);
 
       const modelsDir = new Directory(Paths.document, 'models');
       const modelFile = new File(modelsDir, model.modelFile);
       const mmprojFile = new File(modelsDir, model.mmprojFile);
 
       if (!modelFile.exists || !mmprojFile.exists) {
-        setStatus('Model files not found');
+        const errorMsg = 'Model files not found';
+        console.error(`[Model] ${errorMsg}`);
+        setStatus(errorMsg);
+        Alert.alert('Error', errorMsg);
         return;
       }
 
+      console.log(`[Model] Model file: ${modelFile.uri}`);
+      console.log(`[Model] Mmproj file: ${mmprojFile.uri}`);
+      console.log(`[Model] Model size: ${modelFile.size} bytes`);
+      console.log(`[Model] Mmproj size: ${mmprojFile.size} bytes`);
+
       // Release old context if exists
       if (contextRef.current) {
+        console.log('[Model] Releasing old context...');
         await contextRef.current.release();
         contextRef.current = null;
       }
@@ -189,17 +243,25 @@ export default function HybridFlightLogExtractor() {
         n_gpu_layers: 99,
       });
 
+      console.log('[Model] Model initialized, loading multimodal...');
+
       await context.initMultimodal({
         path: mmprojFile.uri,
       });
+
+      console.log('[Model] Multimodal initialized successfully');
 
       contextRef.current = context;
       setSelectedModel(model);
       setModelReady(true);
       setStatus('Model ready');
+      console.log(`[Model] ${model.name} loaded and ready`);
     } catch (error: any) {
-      console.error('Model load error:', error);
-      setStatus(`Error: ${error.message}`);
+      console.error('[Model] Load error:', error);
+      console.error('[Model] Error details:', JSON.stringify(error, null, 2));
+      const errorMsg = `Failed to load model: ${error.message || 'Unknown error'}`;
+      setStatus(errorMsg);
+      Alert.alert('Model Load Failed', errorMsg);
     }
   };
 
@@ -417,6 +479,8 @@ export default function HybridFlightLogExtractor() {
       console.log('===========================================\n');
       console.log(`[Process] OCR summary length: ${ocrSummary.length} chars`);
 
+      // ========== FIRST LLM CALL - COMMENTED OUT FOR NOW ==========
+      /*
       // Step 3: Run LLM extraction
       console.log('[Process] Step 3: Starting LLM extraction...');
       setStatus('Extracting with Qwen3-VL (this may take 1-2 min)...');
@@ -576,42 +640,20 @@ Return ONLY the JSON array, no explanations or markdown code fences.`;
       console.log(
         '[Process] First extraction complete! Starting second extraction with alternative prompt...'
       );
+      */
 
       // ========== SECOND LLM CALL WITH ALTERNATIVE PROMPT ==========
 
-      // Load alternative prompt from prompt.txt
-      console.log('[Process] Loading alternative prompt from prompt.txt...');
-      const promptFile = new File(Paths.bundle, 'prompt.txt');
-      const alternativePromptJson = await promptFile.text();
+      // Use embedded alternative prompt
+      console.log('[Process] Step 3: Using alternative prompt...');
+      setStatus('Extracting with Qwen3-VL (alternative prompt)...');
+      setProgress(50);
 
-      // Build alternative prompt with OCR data
-      const alternativePrompt = `${alternativePromptJson}
+      // Build alternative prompt
+      const alternativePrompt = `USER:  You are expert in flight log tables, extracting flight log data from 2 facing pages in landscape format. Apply the following template to the images and return the extracted values as JSON.  Use the OCR BOUNDING BOX DATA to understand the rows, columns, and cells to understand what is an empty cell.
 
-OCR BOUNDING BOX DATA (showing table structure and cell positions):
-${ocrSummary}
-
-CRITICAL INSTRUCTIONS:
-1. Extract data from ALL ${ocrResult.leftTable.rowCount - 1} flight rows (excluding header row)
-2. Process EVERY row from row 1 to row ${ocrResult.leftTable.rowCount - 1}
-3. Do NOT skip rows - even if a row appears empty, include it with empty/null values
-4. Use the bounding box data to understand row and column positions
-5. For each row, extract data from BOTH left and right pages
-6. Match rows by their physical position (row number)
-
-IMPORTANT: For each field you extract, provide:
-- value: The extracted value
-- confidence: Your confidence level (0.0-1.0)
-- reasoning: Brief explanation of why you chose this value
-
-EXPECTED OUTPUT: A JSON array with ${ocrResult.leftTable.rowCount - 1} objects (one per flight row).
-
-REMINDER: Extract ALL ${ocrResult.leftTable.rowCount - 1} flight rows. Do not stop after the first row!
-
-Return ONLY the JSON array, no explanations or markdown code fences.`;
-
-      console.log('========== ALTERNATIVE PROMPT TO LLM ==========');
-      console.log(alternativePrompt);
-      console.log('===============================================\n');
+      ${ALTERNATIVE_PROMPT}
+      `;
 
       let tokenCount2 = 0;
       let lastLogTime2 = Date.now();
@@ -637,7 +679,7 @@ Return ONLY the JSON array, no explanations or markdown code fences.`;
           if (data.token) {
             tokenCount2++;
             const progressPercent =
-              50 + Math.min((tokenCount2 / 8000) * 45, 45);
+              50 + Math.min((tokenCount2 / 8000) * 50, 50);
             setProgress(progressPercent);
 
             const now = Date.now();
@@ -648,10 +690,10 @@ Return ONLY the JSON array, no explanations or markdown code fences.`;
                 1000
               ).toFixed(1);
               console.log(
-                `[Process] LLM2 progress: ${tokenCount2} tokens in ${elapsed}s (${tokensPerSec} tok/s)`
+                `[Process] LLM progress: ${tokenCount2} tokens in ${elapsed}s (${tokensPerSec} tok/s)`
               );
               setStatus(
-                `Generating (Alt)... ${tokenCount2} tokens (${tokensPerSec} tok/s)`
+                `Generating... ${tokenCount2} tokens (${tokensPerSec} tok/s)`
               );
               lastLogTime2 = now;
             }
@@ -668,29 +710,23 @@ Return ONLY the JSON array, no explanations or markdown code fences.`;
         `[Process] LLM2 complete in ${llmDuration2}s: ${tokenCount2} tokens (${avgTokensPerSec2} tok/s avg)`
       );
 
-      console.log('========== RAW LLM OUTPUT (ALTERNATIVE) ==========');
+      console.log('========== RAW LLM OUTPUT ==========');
       console.log(completion2.text);
-      console.log('==================================================\n');
+      console.log('====================================\n');
 
       setProgress(95);
-      setStatus('Parsing alternative results...');
-      console.log('[Process] Parsing alternative LLM output...');
+      setStatus('Parsing results...');
+      console.log('[Process] Step 4: Parsing LLM output...');
 
       const extracted2 = parseModelOutput(completion2.text);
 
-      console.log(
-        '========== EXTRACTED FLIGHT ENTRIES (ALTERNATIVE) =========='
-      );
+      console.log('========== EXTRACTED FLIGHT ENTRIES ==========');
       console.log(JSON.stringify(extracted2, null, 2));
-      console.log(
-        '============================================================\n'
-      );
-      console.log(
-        `[Process] Extracted ${extracted2.length} flight entries from alternative prompt`
-      );
+      console.log('==============================================\n');
+      console.log(`[Process] Extracted ${extracted2.length} flight entries`);
 
       // Parse and log CSV for second prompt
-      const csv2 = parseAndLogCSV(extracted2, 'PROMPT 2');
+      const csv2 = parseAndLogCSV(extracted2, 'ALTERNATIVE PROMPT');
 
       setResult2({
         ocrData: ocrResult,
@@ -700,10 +736,8 @@ Return ONLY the JSON array, no explanations or markdown code fences.`;
       });
 
       setProgress(100);
-      setStatus(
-        `Complete! Prompt 1: ${extracted.length} flights | Prompt 2: ${extracted2.length} flights`
-      );
-      console.log('[Process] Both extractions complete!');
+      setStatus(`Complete! Extracted ${extracted2.length} flights`);
+      console.log('[Process] Extraction complete!');
     } catch (error: any) {
       console.error('[Process] ERROR:', error);
       Alert.alert('Error', error.message);
@@ -783,10 +817,10 @@ Return ONLY the JSON array, no explanations or markdown code fences.`;
   };
 
   const shareResults = async () => {
-    if (!result) return;
+    if (!result2) return;
 
     try {
-      const csv = convertToCSV(result.extractedFlights);
+      const csv = convertToCSV(result2.extractedFlights);
       const file = new File(Paths.cache, `flight-log-${Date.now()}.csv`);
       await file.write(csv);
       await Sharing.shareAsync(file.uri);
@@ -796,7 +830,7 @@ Return ONLY the JSON array, no explanations or markdown code fences.`;
   };
 
   const shareDetailedResults = async () => {
-    if (!result) return;
+    if (!result2) return;
 
     try {
       // Create comprehensive report
@@ -804,42 +838,42 @@ Return ONLY the JSON array, no explanations or markdown code fences.`;
 
       report += '=== SUMMARY ===\n';
       report += `Extraction Date: ${new Date().toLocaleString()}\n`;
-      report += `Prompt 1 Flights: ${result.extractedFlights.length}\n`;
-      if (result2) {
-        report += `Prompt 2 Flights: ${result2.extractedFlights.length}\n`;
-      }
-      report += `OCR Cells Detected: ${result.ocrData.metadata.totalCells}\n`;
-      report += `Left Page Columns: ${result.ocrData.leftTable.columnCount}\n`;
-      report += `Right Page Columns: ${result.ocrData.rightTable.columnCount}\n\n`;
+      report += `Flights Extracted: ${result2.extractedFlights.length}\n`;
+      report += `OCR Cells Detected: ${result2.ocrData.metadata.totalCells}\n`;
+      report += `Left Page Columns: ${result2.ocrData.leftTable.columnCount}\n`;
+      report += `Right Page Columns: ${result2.ocrData.rightTable.columnCount}\n\n`;
 
       report += '=== RAW OCR RESULTS ===\n';
       report += 'LEFT PAGE STRUCTURE:\n';
-      report += JSON.stringify(result.ocrData.leftTable, null, 2) + '\n\n';
+      report += JSON.stringify(result2.ocrData.leftTable, null, 2) + '\n\n';
       report += 'RIGHT PAGE STRUCTURE:\n';
-      report += JSON.stringify(result.ocrData.rightTable, null, 2) + '\n\n';
+      report += JSON.stringify(result2.ocrData.rightTable, null, 2) + '\n\n';
 
       report += 'LEFT PAGE CELLS (first 30):\n';
       report +=
-        JSON.stringify(result.ocrData.cellData.left.slice(0, 30), null, 2) +
+        JSON.stringify(result2.ocrData.cellData.left.slice(0, 30), null, 2) +
         '\n\n';
       report += 'RIGHT PAGE CELLS (first 30):\n';
       report +=
-        JSON.stringify(result.ocrData.cellData.right.slice(0, 30), null, 2) +
+        JSON.stringify(result2.ocrData.cellData.right.slice(0, 30), null, 2) +
         '\n\n';
 
-      report += '========== PROMPT 1: CURRENT SYSTEM PROMPT ==========\n\n';
+      report += '========== ALTERNATIVE PROMPT EXTRACTION ==========\n\n';
 
-      report += '=== EXTRACTED FLIGHTS WITH REASONING (PROMPT 1) ===\n';
-      result.extractedFlights.forEach((flight: any, idx: number) => {
+      report += '=== EXTRACTED FLIGHTS WITH REASONING ===\n';
+      result2.extractedFlights.forEach((flight: any, idx: number) => {
         report += `\nFlight ${idx + 1}:\n`;
         report += JSON.stringify(flight, null, 2) + '\n';
       });
       report += '\n';
 
-      report += '=== RAW LLM OUTPUT (PROMPT 1) ===\n';
-      report += result.rawLLMOutput + '\n\n';
+      report += '=== RAW LLM OUTPUT ===\n';
+      report += result2.rawLLMOutput + '\n\n';
 
-      report += '=== CSV FORMAT (PROMPT 1) ===\n';
+      report += '=== CSV FORMAT ===\n';
+      report += convertToCSV(result2.extractedFlights) + '\n';
+
+      report += '========== END REPORT ==========\n';
       report += convertToCSV(result.extractedFlights) + '\n';
 
       if (result2) {
@@ -863,14 +897,11 @@ Return ONLY the JSON array, no explanations or markdown code fences.`;
       report += '========== END REPORT ==========\n';
 
       // Save to file and share
-      const file = new File(
-        Paths.cache,
-        `flight-log-comparison-${Date.now()}.txt`
-      );
+      const file = new File(Paths.cache, `flight-log-${Date.now()}.txt`);
       await file.write(report);
       await Sharing.shareAsync(file.uri, {
         mimeType: 'text/plain',
-        dialogTitle: 'Share Flight Log Comparison Report',
+        dialogTitle: 'Share Flight Log Report',
       });
     } catch (error: any) {
       Alert.alert('Error', error.message);

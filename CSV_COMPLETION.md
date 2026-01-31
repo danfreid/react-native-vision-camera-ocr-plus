@@ -2,11 +2,20 @@
 
 ## What Was Completed
 
-The dual prompt comparison feature now includes **full CSV parsing and display** for both prompts!
+The dual prompt comparison feature now includes **full CSV parsing and display** for both prompts, with the alternative prompt **embedded directly in the code**!
 
 ## Changes Made
 
-### 1. Added CSV Parsing for Second Prompt
+### 1. Embedded Alternative Prompt as Constant
+**File:** `example/HybridFlightLogExtractor.tsx`
+
+**Location:** After `SYSTEM_PROMPT` constant (around line 100)
+
+The alternative prompt from `example/prompt.txt` is now embedded as `ALTERNATIVE_PROMPT` constant. This ensures it's always available at runtime without needing to load from a file.
+
+**Why:** `Paths.bundle` doesn't work reliably in Expo apps for accessing text files at runtime. Embedding the prompt directly in the code is more reliable and eliminates file loading errors.
+
+### 2. Added CSV Parsing for Second Prompt
 **File:** `example/HybridFlightLogExtractor.tsx`
 
 **Location:** After line ~647 where `extracted2` is parsed
@@ -23,7 +32,7 @@ setResult2({
 });
 ```
 
-### 2. Added CSV Display in UI for Prompt 1
+### 3. Added CSV Display in UI for Prompt 1
 **File:** `example/HybridFlightLogExtractor.tsx`
 
 **Location:** After Raw LLM Output section for Prompt 1
@@ -41,7 +50,7 @@ setResult2({
 )}
 ```
 
-### 3. Added CSV Display in UI for Prompt 2
+### 4. Added CSV Display in UI for Prompt 2
 **File:** `example/HybridFlightLogExtractor.tsx`
 
 **Location:** After Raw LLM Output section for Prompt 2
@@ -170,6 +179,7 @@ npx eas build --platform ios --profile development --non-interactive
 ✅ CSV includes header row and all columns  
 ✅ CSV logged to console for debugging  
 ✅ CSV included in Full Report  
+✅ Alternative prompt embedded in code (no file loading needed)  
 ✅ No syntax errors  
 ✅ Code formatted with Prettier  
 
