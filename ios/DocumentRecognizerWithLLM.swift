@@ -63,6 +63,9 @@ class DocumentRecognizerWithLLM: NSObject {
         @Guide(description: "Column index starting from 0")
         let column: Int
         
+        @Guide(description: "Column header name")
+        let columnHeader: String
+        
         @Guide(description: "Confidence score 0.0-1.0")
         let confidence: Double
     }
@@ -116,11 +119,14 @@ class DocumentRecognizerWithLLM: NSObject {
                 // Step 3: Combine and align tables
                 let combinedCSV = combineTablesWithLLM(left: leftTable, right: rightTable)
                 
-                // Step 4: Calculate totals if requested
-                let calculations = try await calculateTotals(csv: combinedCSV, context: contextPrompt)
+                // Step 4: Use LLM to correct errors in the CSV
+                let correctedCSV = try await correctCSVWithLLM(csv: combinedCSV, context: contextPrompt)
+                
+                // Step 5: Calculate totals if requested
+                let calculations = try await calculateTotals(csv: correctedCSV, context: contextPrompt)
                 
                 resolve([
-                    "csv": combinedCSV,
+                    "csv": correctedCSV,
                     "leftTable": serializeTable(leftTable),
                     "rightTable": serializeTable(rightTable),
                     "calculations": calculations,
@@ -222,10 +228,12 @@ class DocumentRecognizerWithLLM: NSObject {
             for (colIdx, value) in row.enumerated() {
                 if rowIdx < rawData.count && colIdx < rawData[rowIdx].count {
                     let cellData = rawData[rowIdx][colIdx]
+                    let columnHeader = colIdx < headers.count ? headers[colIdx] : ""
                     cells.append(TableCell(
                         value: value,
                         row: rowIdx,
                         column: colIdx,
+                        columnHeader: columnHeader,
                         confidence: Double(cellData.confidence)
                     ))
                 }
@@ -368,6 +376,59 @@ class DocumentRecognizerWithLLM: NSObject {
             let conf = String(format: "%.2f", item.confidence)
             return "\"\(item.text)\", \(x), \(y), \(w), \(h), \(conf)"
         }.joined(separator: "\n")
+    }
+    
+    // MARK: - CSV Error Correction
+    
+    private func correctCSVWithLLM(csv: String, context: String) async throws -> String {
+        guard let session = session else {
+            // If LLM not available, return original CSV
+            return csv
+        }
+        
+        // Only send first 20 rows to LLM to avoid context window issues
+        let lines = csv.split(separator: "\n")
+        let headerLines = lines.prefix(5) // Comments and header
+        let dataLines = lines.dropFirst(5).prefix(20) // First 20 data rows
+        let sampleCSV = (headerLines + dataLines).joined(separator: "\n")
+        
+        let prompt = Prompt {
+            """
+            Correct OCR errors in this flight logbook CSV data.
+            
+            Context: \(context)
+            
+            CSV Data (first 20 rows):
+            \(sampleCSV)
+            
+            Common OCR errors to fix:
+            1. Aircraft types: LB25→LR25, BE-Z-O→BE-200, BEZAY→BE-200, IAILY→IA1124, IAI24→IA1124
+            2. Slashed zero: Ø→0 (not 6)
+            3. Character confusion: 0/O, 1/I, 8/B, 5/S
+            4. Decimal format: "2|8"→"2.8", "|6"→"0.6", "2|"→"2.0"
+            5. Airport codes: 3-letter codes (HOU, IAH, DFW, etc.)
+            6. Date format: M/D or MM/DD (9/10 = September 10, not August)
+            
+            Return ONLY the corrected CSV rows (no explanations).
+            Keep the same structure and number of columns.
+            Only fix obvious errors - preserve original text if uncertain.
+            """
+        }
+        
+        do {
+            let response = try await session.respond(to: prompt)
+            let correctedSample = response.content
+            
+            // Replace the sample rows with corrected ones
+            let remainingLines = lines.dropFirst(25) // Rows after the sample
+            let correctedCSV = (headerLines + correctedSample.split(separator: "\n") + remainingLines).joined(separator: "\n")
+            
+            return correctedCSV
+        } catch {
+            // If LLM fails, return original CSV
+            print("LLM correction failed: \(error.localizedDescription)")
+            return csv
+        }
     }
     
     // MARK: - Table Combination

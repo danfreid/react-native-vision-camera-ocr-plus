@@ -316,6 +316,25 @@ export default function EnhancedFlightLogExtractor() {
                 </ScrollView>
               </View>
 
+              <View style={styles.cellPreview}>
+                <Text style={styles.cellPreviewTitle}>Cell Data with Headers</Text>
+                <ScrollView style={styles.cellPreviewScroll}>
+                  <Text style={styles.cellPreviewSubtitle}>Left Table (first 10 cells):</Text>
+                  {result.rawLLMResponse.leftTable.cells.slice(0, 10).map((cell, idx) => (
+                    <Text key={`left-${idx}`} style={styles.cellPreviewText}>
+                      [{cell.row},{cell.column}] {cell.columnHeader}: "{cell.value}" ({(cell.confidence * 100).toFixed(1)}%)
+                    </Text>
+                  ))}
+                  
+                  <Text style={[styles.cellPreviewSubtitle, {marginTop: 16}]}>Right Table (first 10 cells):</Text>
+                  {result.rawLLMResponse.rightTable.cells.slice(0, 10).map((cell, idx) => (
+                    <Text key={`right-${idx}`} style={styles.cellPreviewText}>
+                      [{cell.row},{cell.column}] {cell.columnHeader}: "{cell.value}" ({(cell.confidence * 100).toFixed(1)}%)
+                    </Text>
+                  ))}
+                </ScrollView>
+              </View>
+
               <View style={styles.jsonPreview}>
                 <Text style={styles.jsonTitle}>Raw LLM JSON Response</Text>
                 <ScrollView
@@ -505,6 +524,34 @@ const styles = StyleSheet.create({
     fontFamily: 'Courier',
     fontSize: 12,
     color: '#333',
+  },
+  cellPreview: {
+    backgroundColor: '#f8f9fa',
+    padding: 16,
+    borderRadius: 8,
+    marginBottom: 20,
+  },
+  cellPreviewTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 8,
+    color: '#333',
+  },
+  cellPreviewSubtitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+    color: '#2196F3',
+  },
+  cellPreviewScroll: {
+    maxHeight: 300,
+  },
+  cellPreviewText: {
+    fontFamily: 'Courier',
+    fontSize: 11,
+    color: '#555',
+    marginBottom: 4,
+    paddingLeft: 8,
   },
   jsonPreview: {
     backgroundColor: '#1e1e1e',

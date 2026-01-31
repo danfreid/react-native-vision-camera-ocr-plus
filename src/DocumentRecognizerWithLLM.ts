@@ -21,6 +21,7 @@ export interface TableCell {
   value: string;
   row: number;
   column: number;
+  columnHeader: string;
   confidence: number;
 }
 
