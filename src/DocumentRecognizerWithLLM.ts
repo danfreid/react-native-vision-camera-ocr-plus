@@ -115,9 +115,14 @@ export async function processTableWithLLM(
   if (Platform.OS !== 'ios') {
     throw new Error('Foundation Models is only available on iOS 26+');
   }
+  
+  // Strip file:// prefix for iOS
+  let processLeftUri = leftImageUri.replace('file://', '');
+  let processRightUri = rightImageUri.replace('file://', '');
+  
   return DocumentRecognizerWithLLM.processTableWithLLM(
-    leftImageUri,
-    rightImageUri,
+    processLeftUri,
+    processRightUri,
     contextPrompt
   );
 }

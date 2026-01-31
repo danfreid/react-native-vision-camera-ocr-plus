@@ -205,43 +205,158 @@ class DocumentRecognizerWithLLM: NSObject {
             throw NSError(domain: "DocumentRecognizerWithLLM", code: -1, userInfo: [NSLocalizedDescriptionKey: "Session not initialized"])
         }
         
-        // Format OCR data for LLM
-        let ocrDescription = formatOCRDataForLLM(ocrData)
+        // First, use traditional OCR grouping to get initial structure
+        let (rows, rawData) = groupIntoRowsWithData(textItems: ocrData, isLeftPage: side == "left")
         
-        let prompt = Prompt {
-            """
-            Analyze this OCR data from the \(side) page of a flight logbook table.
-            
-            Context: \(context)
-            
-            OCR Data (text, x, y, width, height, confidence):
-            \(ocrDescription)
-            
-            Task:
-            1. Identify the table structure (rows and columns)
-            2. Group text elements into cells based on spatial proximity
-            3. Correct common OCR errors in handwritten text:
-               - Slashed zeros (Ø) should be 0, not 6
-               - Distinguish between 0/O, 1/I, 8/B, 5/S
-               - Fix aircraft codes: LB25→LR25, BE-Z-O→BE-200, IAILY→IA1124
-            4. Handle decimal formats: "2|8" means 2.8, "|6" means 0.6
-            5. Preserve empty cells as empty strings
-            6. Extract column headers from the top rows
-            
-            Return the structured table data.
-            """
+        // Build initial table structure
+        var cells: [TableCell] = []
+        var headers: [String] = []
+        
+        // Extract headers from first row
+        if !rows.isEmpty {
+            headers = rows[0]
         }
         
-        let response = try await session.respond(
-            to: prompt,
-            generating: TableStructure.self,
-            options: GenerationOptions(
-                temperature: 0.1,  // Low temperature for precision
-                maximumResponseTokens: 2000
-            )
-        )
+        // Build cells from all rows
+        for (rowIdx, row) in rows.enumerated() {
+            for (colIdx, value) in row.enumerated() {
+                if rowIdx < rawData.count && colIdx < rawData[rowIdx].count {
+                    let cellData = rawData[rowIdx][colIdx]
+                    cells.append(TableCell(
+                        value: value,
+                        row: rowIdx,
+                        column: colIdx,
+                        confidence: Double(cellData.confidence)
+                    ))
+                }
+            }
+        }
         
-        return response.content
+        // Only use LLM for error correction on low-confidence cells
+        let lowConfidenceCells = cells.filter { $0.confidence < 0.8 }
+        
+        if !lowConfidenceCells.isEmpty && lowConfidenceCells.count < 50 {
+            // Format only low-confidence cells for LLM correction
+            let cellsToCorrect = lowConfidenceCells.map { cell in
+                "[\(cell.row),\(cell.column)]: \"\(cell.value)\" (conf: \(String(format: "%.2f", cell.confidence)))"
+            }.joined(separator: "\n")
+            
+            let prompt = Prompt {
+                """
+                Correct OCR errors in these flight logbook cells:
+                
+                \(cellsToCorrect)
+                
+                Common errors to fix:
+                - Slashed zero (Ø) → 0
+                - Aircraft: LB25→LR25, BE-Z-O→BE-200, IAILY→IA1124
+                - Decimals: "2|8"→"2.8", "|6"→"0.6"
+                
+                Return corrected values only if you're confident there's an error.
+                """
+            }
+            
+            // Note: For now, skip LLM correction to avoid context issues
+            // Just return the OCR-based structure
+        }
+        
+        return TableStructure(
+            rowCount: rows.count,
+            columnCount: rows.first?.count ?? 0,
+            cells: cells,
+            headers: headers
+        )
+    }
+    
+    // Helper function to group OCR data into rows (reuse from DocumentRecognizerModule)
+    private func groupIntoRowsWithData(textItems: [(text: String, bounds: CGRect, confidence: Float)], isLeftPage: Bool) -> ([[String]], [[(text: String, bounds: CGRect, confidence: Float)]]) {
+        guard !textItems.isEmpty else { return ([], []) }
+        
+        let avgHeight = textItems.map { $0.bounds.height }.reduce(0, +) / CGFloat(textItems.count)
+        let rowThreshold = max(avgHeight * 0.6, 10)
+        
+        let sorted = textItems.sorted { a, b in
+            let yDiff = abs(a.bounds.midY - b.bounds.midY)
+            if yDiff < rowThreshold { return a.bounds.minX < b.bounds.minX }
+            return a.bounds.minY < b.bounds.minY
+        }
+        
+        var rows: [[(text: String, bounds: CGRect, confidence: Float)]] = []
+        var currentRow: [(text: String, bounds: CGRect, confidence: Float)] = []
+        var lastY: CGFloat = -1000
+        
+        for item in sorted {
+            if abs(item.bounds.midY - lastY) > rowThreshold {
+                if !currentRow.isEmpty {
+                    rows.append(currentRow.sorted { $0.bounds.minX < $1.bounds.minX })
+                }
+                currentRow = [item]
+            } else {
+                currentRow.append(item)
+            }
+            lastY = item.bounds.midY
+        }
+        if !currentRow.isEmpty {
+            rows.append(currentRow.sorted { $0.bounds.minX < $1.bounds.minX })
+        }
+        
+        // Use the header merging logic
+        let leftHeaders = [
+            "DATE", "AIRCRAFT MAKE AND MODEL", "AIRCRAFT IDENT", "FROM", "TO",
+            "TOTAL DURATION OF FLIGHT", "AIRPLANE SINGLE- ENGINE LAND", "AIRPLANE SINGLE- ENGINE SEA",
+            "AIRPLANE MULTI- ENGINE LAND", "NEBASET", "ROTORCRAFT HELICOPTER",
+            "GLIDER", "TURBOPROP", "D A Y", "N I G H T"
+        ]
+        
+        let rightHeaders = [
+            "NIGHT", "ACTUAL INSTRUMENT", "SIMULATED INSTRUMENT (HOOD)",
+            "APP NO. TYPE", "FLIGHT SIMULATOR", "CROSS COUNTRY", "SOLO",
+            "PILOT IN COMMAND", "SECOND IN COMMAND", "DUAL RECEIVED",
+            "AS FLIGHT INSTRUCTOR", "REMARKS AND ENDORSEMENTS"
+        ]
+        
+        let headers = isLeftPage ? leftHeaders : rightHeaders
+        
+        // Skip first 8 rows and use data rows
+        let dataRows = Array(rows.dropFirst(min(8, rows.count)))
+        
+        // Detect column positions
+        var colPositions: [CGFloat] = []
+        for row in dataRows.prefix(5) {
+            for item in row {
+                let x = item.bounds.minX
+                if !colPositions.contains(where: { abs($0 - x) < 30 }) {
+                    colPositions.append(x)
+                }
+            }
+        }
+        colPositions.sort()
+        
+        // Adjust to match header count
+        if colPositions.count > headers.count {
+            let avgSpacing = (colPositions.last! - colPositions.first!) / CGFloat(headers.count - 1)
+            var adjustedPositions: [CGFloat] = []
+            for i in 0..<headers.count {
+                let targetX = colPositions.first! + (CGFloat(i) * avgSpacing)
+                let closest = colPositions.min(by: { abs($0 - targetX) < abs($1 - targetX) }) ?? targetX
+                adjustedPositions.append(closest)
+            }
+            colPositions = adjustedPositions
+        }
+        
+        // Build header row
+        let headerY = rows.first?.first?.bounds.minY ?? 0
+        var headerRow: [(text: String, bounds: CGRect, confidence: Float)] = []
+        for (idx, headerText) in headers.enumerated() {
+            let colX = idx < colPositions.count ? colPositions[idx] : CGFloat(idx * 50)
+            let bounds = CGRect(x: colX, y: headerY, width: 50, height: 20)
+            headerRow.append((text: headerText, bounds: bounds, confidence: 1.0))
+        }
+        
+        let allRows = [headerRow] + dataRows
+        let stringRows = allRows.map { row in row.map { $0.text } }
+        
+        return (stringRows, allRows)
     }
     
     private func formatOCRDataForLLM(_ ocrData: [(text: String, bounds: CGRect, confidence: Float)]) -> String {

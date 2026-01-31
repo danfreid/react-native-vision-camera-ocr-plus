@@ -98,7 +98,7 @@ export default function EnhancedFlightLogExtractor() {
   const pickImage = async (side: 'left' | 'right') => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: false,
         quality: 1,
       });
