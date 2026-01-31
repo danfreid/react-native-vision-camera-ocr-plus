@@ -140,7 +140,9 @@ export default function EnhancedFlightLogExtractor() {
         FLIGHT_LOG_CONTEXT
       );
 
-      console.log('Extraction complete!');
+      console.log('=== LLM EXTRACTION COMPLETE ===');
+      console.log('CSV:', extractionResult.csv);
+      console.log('Raw LLM Response:', JSON.stringify(extractionResult.rawLLMResponse, null, 2));
       console.log('Total hours:', extractionResult.calculations.totalHours);
       console.log('Rows extracted:', extractionResult.leftTable.rowCount);
 
@@ -310,6 +312,18 @@ export default function EnhancedFlightLogExtractor() {
                   <Text style={styles.csvText}>
                     {result.csv.split('\n').slice(0, 10).join('\n')}
                     {result.csv.split('\n').length > 10 && '\n...'}
+                  </Text>
+                </ScrollView>
+              </View>
+
+              <View style={styles.jsonPreview}>
+                <Text style={styles.jsonTitle}>Raw LLM JSON Response</Text>
+                <ScrollView
+                  style={styles.jsonScroll}
+                  showsVerticalScrollIndicator={true}
+                >
+                  <Text style={styles.jsonText}>
+                    {JSON.stringify(result.rawLLMResponse, null, 2)}
                   </Text>
                 </ScrollView>
               </View>
@@ -491,6 +505,27 @@ const styles = StyleSheet.create({
     fontFamily: 'Courier',
     fontSize: 12,
     color: '#333',
+  },
+  jsonPreview: {
+    backgroundColor: '#1e1e1e',
+    padding: 16,
+    borderRadius: 8,
+    marginBottom: 20,
+  },
+  jsonTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 8,
+    color: '#4CAF50',
+  },
+  jsonScroll: {
+    maxHeight: 300,
+  },
+  jsonText: {
+    fontFamily: 'Courier',
+    fontSize: 11,
+    color: '#d4d4d4',
+    lineHeight: 16,
   },
   exportButton: {
     padding: 16,

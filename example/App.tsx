@@ -1,8 +1,6 @@
 import * as React from 'react';
 import {
   Alert,
-  Button,
-  Dimensions,
   Image,
   Modal,
   ScrollView,
@@ -12,9 +10,7 @@ import {
   View,
   TouchableOpacity,
 } from 'react-native';
-import {
-  DualImageRecognizer,
-} from 'react-native-vision-camera-ocr';
+import { DualImageRecognizer } from 'react-native-vision-camera-ocr';
 import * as ImagePicker from 'expo-image-picker';
 
 export default function App() {
@@ -450,23 +446,31 @@ Generated: ${new Date().toLocaleString()}
                   
                   <View style={styles.detailsCard}>
                     <Text style={styles.detailsTitle}>Date Column</Text>
-                    <Text style={styles.detailsText}>
-                      Column: {results.dateColumn.columnName}{'\n'}
-                      Cells: {results.dateColumn.cells?.length || 0}{'\n'}
-                      Bounds: ({Math.round(results.dateColumn.columnBounds.left)},{Math.round(results.dateColumn.columnBounds.top)}) to ({Math.round(results.dateColumn.columnBounds.right)},{Math.round(results.dateColumn.columnBounds.bottom)})
-                    </Text>
-                    <ScrollView style={styles.dateColumnScroll}>
-                      {results.dateColumn.cells?.slice(0, 10).map((cell: any, idx: number) => (
-                        <Text key={`date-${idx}`} style={styles.dateColumnText}>
-                          {cell.isHeader ? '📌 ' : '📅 '}"{cell.value}" | Conf: {(cell.confidence * 100).toFixed(1)}%
+                    {results.dateColumn.columnName ? (
+                      <>
+                        <Text style={styles.detailsText}>
+                          Column: {results.dateColumn.columnName}{'\n'}
+                          Cells: {results.dateColumn.cells?.length || 0}{'\n'}
+                          Bounds: ({Math.round(results.dateColumn.columnBounds.left)},{Math.round(results.dateColumn.columnBounds.top)}) to ({Math.round(results.dateColumn.columnBounds.right)},{Math.round(results.dateColumn.columnBounds.bottom)})
                         </Text>
-                      ))}
-                      {(results.dateColumn.cells?.length || 0) > 10 && (
-                        <Text style={styles.dateColumnMore}>
-                          ... and {(results.dateColumn.cells?.length || 0) - 10} more cells
-                        </Text>
-                      )}
-                    </ScrollView>
+                        <ScrollView style={styles.dateColumnScroll}>
+                          {results.dateColumn.cells?.slice(0, 10).map((cell: any, idx: number) => (
+                            <Text key={`date-${idx}`} style={styles.dateColumnText}>
+                              {cell.isHeader ? '📌 ' : '📅 '}"{cell.value}" | Conf: {(cell.confidence * 100).toFixed(1)}%
+                            </Text>
+                          ))}
+                          {(results.dateColumn.cells?.length || 0) > 10 && (
+                            <Text style={styles.dateColumnMore}>
+                              ... and {(results.dateColumn.cells?.length || 0) - 10} more cells
+                            </Text>
+                          )}
+                        </ScrollView>
+                      </>
+                    ) : (
+                      <Text style={styles.detailsText}>
+                        No DATE column found in this page
+                      </Text>
+                    )}
                   </View>
                   
                   <View style={styles.detailsCard}>

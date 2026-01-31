@@ -1,7 +1,7 @@
 import Foundation
 import UIKit
 import React
-import Vision
+@preconcurrency import Vision
 import FoundationModels
 
 @available(iOS 26.0, *)
@@ -21,35 +21,31 @@ class DocumentRecognizerWithLLM: NSObject {
     @objc(initialize:withRejecter:)
     func initialize(resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
         Task {
-            do {
-                let model = SystemLanguageModel.default
-                
-                // Check availability
-                switch model.availability {
-                case .available:
-                    // Create session with custom instructions for table extraction
-                    session = LanguageModelSession(model: model) {
-                        """
-                        You are an expert at analyzing tabular data from OCR results. Your task is to:
-                        1. Understand the spatial layout of text elements (rows, columns, cells)
-                        2. Correct OCR errors in handwritten text
-                        3. Align data into proper table structure
-                        4. Extract accurate values preserving decimal formats
-                        5. Handle merged cells and multi-line entries
-                        
-                        Focus on precision and spatial relationships between text elements.
-                        """
-                    }
+            let model = SystemLanguageModel.default
+            
+            // Check availability
+            switch model.availability {
+            case .available:
+                // Create session with custom instructions for table extraction
+                session = LanguageModelSession(model: model) {
+                    """
+                    You are an expert at analyzing tabular data from OCR results. Your task is to:
+                    1. Understand the spatial layout of text elements (rows, columns, cells)
+                    2. Correct OCR errors in handwritten text
+                    3. Align data into proper table structure
+                    4. Extract accurate values preserving decimal formats
+                    5. Handle merged cells and multi-line entries
                     
-                    isInitialized = true
-                    resolve(["success": true, "message": "Foundation Models initialized"])
-                    
-                case .unavailable(let reason):
-                    let errorMsg = "Foundation Models unavailable: \(reason)"
-                    reject("UNAVAILABLE", errorMsg, nil)
+                    Focus on precision and spatial relationships between text elements.
+                    """
                 }
-            } catch {
-                reject("INIT_ERROR", "Failed to initialize: \(error.localizedDescription)", error)
+                
+                isInitialized = true
+                resolve(["success": true, "message": "Foundation Models initialized"])
+                
+            case .unavailable(let reason):
+                let errorMsg = "Foundation Models unavailable: \(reason)"
+                reject("UNAVAILABLE", errorMsg, nil)
             }
         }
     }
@@ -94,7 +90,7 @@ class DocumentRecognizerWithLLM: NSObject {
         resolve: @escaping RCTPromiseResolveBlock,
         reject: @escaping RCTPromiseRejectBlock
     ) {
-        guard isInitialized, let session = session else {
+        guard isInitialized, session != nil else {
             reject("NOT_INITIALIZED", "Call initialize() first", nil)
             return
         }
@@ -133,6 +129,11 @@ class DocumentRecognizerWithLLM: NSObject {
                         "leftColumns": leftTable.columnCount,
                         "rightRows": rightTable.rowCount,
                         "rightColumns": rightTable.columnCount
+                    ],
+                    "rawLLMResponse": [
+                        "leftTable": serializeTable(leftTable),
+                        "rightTable": serializeTable(rightTable),
+                        "calculations": calculations
                     ]
                 ])
             } catch {

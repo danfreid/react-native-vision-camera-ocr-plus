@@ -52,6 +52,12 @@ export interface EnhancedTableResult {
     rightRows: number;
     rightColumns: number;
   };
+  /** Raw JSON response from the LLM before CSV conversion */
+  rawLLMResponse: {
+    leftTable: TableStructure;
+    rightTable: TableStructure;
+    calculations: FlightCalculations;
+  };
 }
 
 /**
