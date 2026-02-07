@@ -55,7 +55,8 @@ async function extractTextColumn(
   leftImage: string,
   pixelThreshold: number = 1200,
   llamaContext?: LlamaContext | null,
-  requestId?: string
+  requestId?: string,
+  columnGrouping?: string
 ) {
   const ROW_SPACING = 36.25;
   const CROP_Y = 96;
@@ -123,7 +124,8 @@ async function extractTextColumn(
         // const llmColumnPrompt = `This image shows 2 columns (A,B), each with 14 rows of handwritten text. Return a JSON array with all 14 rows.`;
         // const llmColumnPrompt = `This image shows 14 rows of handwritten text. Return a JSON array with all 14 rows.`;
         // const llmColumnPrompt = `This image shows 2-4 columns with 14 rows of handwritten text. Read each row separately from top to bottom. Each row may contain different text - do not assume rows are the same. Return a JSON array with exactly 14 rows, without Markdown or newlines.`;
-        const llmColumnPrompt = `This image shows 2-4 columns with 14 rows of handwritten text. Read each row separately from top to bottom. Each row may contain different text - do not assume rows are the same. Return a JSON array with exactly 14 rows of CSV values, without Markdown or newlines.`;
+        // const llmColumnPrompt = `This image shows 2-20 columns with 14 rows of handwritten text. Read each row separately from top to bottom. Each row may contain different text - do not assume rows are the same. Return a JSON array with exactly 14 rows of CSV values, without Markdown or newlines.`;
+        const llmColumnPrompt = `This image shows ${columnGrouping} columns with 14 rows of handwritten text. Read each row separately from top to bottom. Each row may contain different text - do not assume rows are the same. Return a JSON array with exactly 14 rows of CSV values, without Markdown or newlines.`;
 
         console.log(`  LLM Column Prompt (first 200 chars): ${llmColumnPrompt.substring(0, 200)}...`);
 
@@ -1152,7 +1154,7 @@ export default function HybridFlightLogExtractor() {
       setStatus('Extracting DATE column...');
       setProgress(85);
 
-      const dateResult = await extractTextColumn('DATE', 16, 101, 48, 34, leftImage, 1200, contextRef.current, requestId);
+      const dateResult = await extractTextColumn('DATE', 16, 101, 48, 34, leftImage, 1200, contextRef.current, requestId, '2-3');
       const dateExtractions = dateResult.extractions;
       const cellPresenceMap = dateExtractions;
 
@@ -1193,8 +1195,8 @@ export default function HybridFlightLogExtractor() {
       // const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 74, 101, 55, 34, leftImage, 1200, contextRef.current, requestId);
       // const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImage, 1200, contextRef.current, requestId);  //Pretty good
       //const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImage, 1200, contextRef.current, requestId);
-      const aircraftMakeIdentResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImage, 1200, contextRef.current, requestId); // Use for make and ident
-      const fromToResult = await extractTextColumn('FROM-TO', 188, 101, 165, 34, leftImage, 1200, contextRef.current, requestId); // gets from-to and duration...but variable columns
+      const aircraftMakeIdentResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImage, 1200, contextRef.current, requestId,'2-6'); // Use for make and ident
+      const fromToResult = await extractTextColumn('FROM-TO', 188, 101, 165, 34, leftImage, 1200, contextRef.current, requestId, '2-5'); // gets from-to and duration...but variable columns  with 2-5 columsn
 
       // Split aircraftMakeIdentResult into make and ident
       const aircraftMakeExtractions = aircraftMakeIdentResult.extractions.map((cell: any) => {
