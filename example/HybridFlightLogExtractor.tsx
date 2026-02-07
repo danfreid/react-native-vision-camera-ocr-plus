@@ -17,7 +17,7 @@ import { initLlama, LlamaContext } from 'llama.rn';
 import { File, Paths, Directory } from 'expo-file-system/next';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { DualImageRecognizer, DocumentRecognizer } from 'react-native-vision-camera-ocr';
+import { DocumentRecognizer } from 'react-native-vision-camera-ocr';
 
 // Model definitions
 interface ModelConfig {
@@ -44,90 +44,6 @@ const MODELS: ModelConfig[] = [
   },
 ];
 
-const SYSTEM_PROMPT = `You are extracting flight log data from 2 facing pages in landscape format.
-
-LEFT PAGE has aircraft info and durations with these columns:
-- DATE: Format MM-DD-YYYY. CRITICAL: 9/10 means September 10 (09-10), NOT August. Read month digit carefully before slash.
-- AIRCRAFT MAKE AND MODEL: Standardize OCR errors: LB25/LA25/LR-25=LR25, BEZAY/BENZOO/BE-Z-O/8E-200/BE-210/BE200=BE-200, IAILY/IAI24/IAIZ4/IAI124=IA1124, DAZO-AI/DA20-AI=DA20-A1
-- AIRCRAFT IDENT: Distinguish 0/O, 8/B, Q/0
-- FROM and TO: 3-letter airport codes, combine with hyphens. Multi-leg routes may span multiple lines.
-- TOTAL DURATION OF FLIGHT: Two sub-columns (hours|tenths). Slashed zero = 0 not 6 (∅,Ø,ø,⌀=0). Combine as decimal: 2|8=2.8, 4|2=4.2, |6=0.6, 9|=0.9, 2|∅=2.0
-- AIRPLANE SINGLE-ENGINE LAND, SINGLE-ENGINE SEA, MULTI-ENGINE LAND: Extract from respective columns
-- TURBOJET: ONLY for LR25, IA1124 (jets). CRITICAL: BE-200 is TURBOPROP not turbojet.
-- TURBOPROP: ONLY for BE-200, PC12, TBM, C208, King Air. NOT for jets (LR25, IA1124).
-- ROTORCRAFT HELICOPTER, GLIDER: Only for respective aircraft types
-- LANDINGS DAY: LEFT side of LNDGS cell. Compare horizontal position to determine if left-aligned (Day) or right-aligned (Night).
-- LANDINGS NIGHT: RIGHT side of LNDGS cell. When only ONE number in LNDGS, check alignment.
-
-RIGHT PAGE has conditions and piloting time with these columns (COUNT FROM RIGHT EDGE):
-- REMARKS AND ENDORSEMENTS: Rightmost column. Ditto mark (") means same as row above - extract the mark itself.
-- AS FLIGHT INSTRUCTOR: 2nd column from right edge (last numeric column)
-- DUAL RECEIVED: 3rd column from right edge
-- SECOND IN COMMAND: 4th column from right edge. For multi-crew jets (LR25, IA1124), pilot often logs SIC not PIC.
-- PILOT IN COMMAND: 5th column from right edge, LEFT of SIC column
-- SOLO: 6th column from right edge
-- CROSS COUNTRY: 7th column from right edge, in middle-right area
-- FLIGHT SIMULATOR: Between APP TYPE and CROSS COUNTRY, rarely used
-- APP TYPE: Contains text codes (ILS, VOR, GPS, LOC, T, V, L). NOT numeric values.
-- APP NO.: NARROW single-digit column BEFORE APP TYPE. Contains only integers 1-9. NOT decimal flight times.
-- SIMULATED INSTRUMENT (HOOD): Independent column, two sub-columns (hours|tenths)
-- ACTUAL INSTRUMENT: Immediately RIGHT of NIGHT column. CRITICAL: Single digit in RIGHT sub-column means 0.X (|2 = 0.2 not 2.0)
-- NIGHT: FAR LEFT columns 1-2 of right page
-
-CRITICAL RULES:
-1. STRICT ROW ALIGNMENT: Count physical grid lines from header for EACH column independently. Row 5 is always 5th grid line down, even if earlier rows are empty in that column.
-2. DECIMAL FORMAT: hours|tenths as two sub-columns. Single digit in tenths column = 0.X (|2 = 0.2)
-3. VALIDATION: PIC + SIC + Dual + CFI + Solo MUST equal Total Duration
-4. Slashed zero (∅,Ø,ø,⌀) = 0 not 6
-5. Exclude summary rows: TOTALS THIS PAGE, AMT. FORWARDED, TOTALS TO DATE
-
-You will receive OCR bounding boxes showing spatial layout. Use them to handle empty cells and maintain alignment.
-
-Output JSON array with one object per flight row containing all fields.`;
-
-const ALTERNATIVE_PROMPT = `Extract flight log data from these 2 facing pages (left and right).
-
-LEFT PAGE columns (in order):
-1. DATE (M/D format, year from header)
-2. AIRCRAFT MAKE AND MODEL (e.g., LR25, BE-200, IA1124)
-3. AIRCRAFT IDENT (N-number)
-4. FROM-TO (airport codes with hyphens)
-5. TOTAL DURATION (hours.tenths, e.g., 2|8 = 2.8)
-6. SINGLE-ENGINE LAND (hours.tenths or empty)
-7. SINGLE-ENGINE SEA (hours.tenths or empty)
-8. MULTI-ENGINE LAND (hours.tenths or empty)
-9. TURBOJET (hours.tenths or empty - only for LR25, IA1124)
-10. ROTORCRAFT (hours.tenths or empty)
-11. GLIDER (hours.tenths or empty)
-12. TURBOPROP (hours.tenths or empty - only for BE-200, PC12)
-13. CUSTOM3 (usually empty)
-14. LANDINGS DAY (integer or empty)
-15. LANDINGS NIGHT (integer or empty)
-
-RIGHT PAGE columns (in order):
-16. NIGHT (hours.tenths or empty)
-17. ACTUAL INSTRUMENT (hours.tenths or empty - often small values like 0.2, 0.3)
-18. SIMULATED INSTRUMENT (hours.tenths or empty)
-19. APPROACHES (integer or empty)
-20. APPROACH TYPE (text like ILS, VOR, GPS or empty)
-21. FLIGHT SIMULATOR (hours.tenths or empty)
-22. CROSS COUNTRY (hours.tenths or empty)
-23. SOLO (hours.tenths or empty)
-24. PILOT IN COMMAND (hours.tenths or empty)
-25. SECOND IN COMMAND (hours.tenths or empty)
-26. DUAL RECEIVED (hours.tenths or empty)
-27. AS FLIGHT INSTRUCTOR (hours.tenths or empty)
-28. REMARKS (text or empty)
-
-CRITICAL RULES:
-- Read EACH cell independently - don't repeat values
-- Empty cells = empty string, not zero
-- Slashed zero (Ø) = 0
-- Format X|Y as X.Y (e.g., 2|8 = 2.8, |6 = 0.6)
-- Skip TOTALS rows at bottom
-- Extract 14 flight rows maximum
-
-Output JSON array with one object per row.`;
 
 // Helper function to extract a text column (like DATE, AIRCRAFT MAKE, etc.)
 async function extractTextColumn(
@@ -147,142 +63,128 @@ async function extractTextColumn(
   console.log(`[Process] Extracting ${columnName} column...`);
   console.log(`  Column: x=${x}, y=${y}, width=${width}`);
 
-  // Crop the entire column for Vision OCR (start slightly above first data cell to include grid lines)
-  const cropX = x - 5; // Expand left to include left grid line
-  const cropWidth = width + 20; // Expand right to include right grid line (10 pixels on each side)
-  const lastRowY = y + (13 * ROW_SPACING);
-  const columnHeight = (lastRowY + height + 10) - CROP_Y;
+  // For DATE column: Skip Vision OCR and column LLM, go straight to per-cell LLM
+  const skipColumnProcessing = (columnName === 'DATE');
   
-  const columnBbox = {
-    originX: cropX,
-    originY: CROP_Y, // Start at Y=96 like DATE column
-    width: cropWidth,
-    height: columnHeight,
-  };
-
-  const croppedColumn = await ImageManipulator.manipulateAsync(
-    leftImage,
-    [{ crop: columnBbox }],
-    { compress: 1, format: ImageManipulator.SaveFormat.PNG }
-  );
-
-  // Run Vision OCR on the cropped column
-  const columnOCR = await DocumentRecognizer({
-    uri: croppedColumn.uri,
-    searchCells: [],
-  });
-
-  console.log(`  Vision detected: ${columnOCR.tables?.length || 0} tables`);
-
-  // ========== LLM OCR ON FULL COLUMN ==========
+  let croppedColumn: any = null;
+  let columnBbox: any = null;
+  let columnOCR: any = { tables: [] };
   let llmColumnResult: string[] = [];
-  if (llamaContext) {
-    console.log(`  Running LLM OCR on full column...`);
-    try {
-      // Create column-specific prompt
-      let llmColumnPrompt = '';
 
-      if (columnName === 'DATE') {
-        llmColumnPrompt = `[Request: ${requestId || 'default'}] Read the handwritten text in this column image. Each cell contains text with numbers and a slash character (like "8/10" or "9/17").
+  if (!skipColumnProcessing) {
+    // Crop the entire column for Vision OCR (start slightly above first data cell to include grid lines)
+    const cropX = x - 5; // Expand left to include left grid line
+    const cropWidth = width + 20; // Expand right to include right grid line (10 pixels on each side)
+    
+    const lastRowY = y + (13 * ROW_SPACING);
+    const columnHeight = (lastRowY + height + 10) - CROP_Y;
+    
+    columnBbox = {
+      originX: cropX,
+      originY: CROP_Y, // Start at Y=96 like DATE column
+      width: cropWidth,
+      height: columnHeight,
+    };
 
-Read EXACTLY what is written in each of the 14 cells from top to bottom. These are just text strings - do not interpret them as dates or create any patterns.
+    croppedColumn = await ImageManipulator.manipulateAsync(
+      leftImage,
+      [{ crop: columnBbox }],
+      { compress: 1, format: ImageManipulator.SaveFormat.PNG }
+    );
 
-IMPORTANT:
-- Ignore any arrows, lines, or annotations between cells
-- If handwriting is unclear, make your best guess (e.g., if it looks like "8/36", it's probably "8/30")
-- Read all 14 cells even if some are difficult
+    // Run Vision OCR on the cropped column
+    columnOCR = await DocumentRecognizer({
+      uri: croppedColumn.uri,
+      searchCells: [],
+    });
 
-Return a JSON array with EXACTLY 14 text strings: ["8/10", "8/11", ...]
+    console.log(`  Vision detected: ${columnOCR.tables?.length || 0} tables`);
 
-If a cell is empty, use "".`;
-      } else {
-        llmColumnPrompt = `[Request: ${requestId || 'default'}] Extract all 14 text values from this ${columnName} column image. Return ONLY a JSON array of 14 strings, one per row, in order from top to bottom. If a cell is empty, use empty string "". Do not include any other text.`;
-      }
-
-      console.log(`  LLM Column Prompt (first 200 chars): ${llmColumnPrompt.substring(0, 200)}...`);
-
-      console.log(`  LLM Column: Calling completion API for ${columnName}...`);
-      const llmColumnResponse = await llamaContext.completion(
-        {
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'image_url', image_url: { url: croppedColumn.uri } },
-                { type: 'text', text: llmColumnPrompt },
-              ],
-            },
-          ],
-          n_predict: 500,
-          temperature: 0.1,
-          stop: [']', '\n\n', '```'],
-        },
-        (_data) => {
-          // Progress callback
-        }
-      );
-
-      console.log(`  LLM Column: Response received`);
-      
-      let llmColumnText = llmColumnResponse.text || '';
-      console.log(`  LLM Column Response Text (first 500 chars): ${llmColumnText.substring(0, 500)}`);
-      
-      // Strip markdown code blocks if present
-      llmColumnText = llmColumnText.replace(/```json\s*/g, '').replace(/```\s*/g, '');
-      
-      // Fix double brackets if present
-      llmColumnText = llmColumnText.replace(/^\[\[/, '[').replace(/\]\]$/, ']');
-      
-      // Fix double commas (malformed JSON)
-      llmColumnText = llmColumnText.replace(/,\s*,/g, ',');
-      
-      // Try to parse JSON array from response
+    // ========== LLM OCR ON FULL COLUMN ==========
+    if (llamaContext) {
+      console.log(`  Running LLM OCR on full column...`);
       try {
-        // First, try to find a valid JSON array
-        let jsonMatch = llmColumnText.match(/\[[^\]]*\]/);
-        
-        // If no match or it looks incomplete, try to reconstruct
-        if (!jsonMatch || jsonMatch[0].length < 10) {
-          console.log(`  LLM Column: No complete JSON array found, trying to extract partial...`);
-          
-          const arrayStart = llmColumnText.indexOf('[');
-          if (arrayStart >= 0) {
-            let partialJson = llmColumnText.substring(arrayStart);
-            
-            // Remove any trailing incomplete content after last complete element
-            // Find all complete string elements: "text"
-            const completeElements: string[] = [];
-            const elementRegex = /"([^"]*)"/g;
-            let match;
-            
-            while ((match = elementRegex.exec(partialJson)) !== null) {
-              completeElements.push(`"${match[1]}"`);
-            }
-            
-            if (completeElements.length > 0) {
-              partialJson = '[' + completeElements.join(', ') + ']';
-              console.log(`  LLM Column: Reconstructed JSON with ${completeElements.length} elements`);
-              jsonMatch = [partialJson];
-            }
+        // const llmColumnPrompt = `This image shows a single column with 14 rows of handwritten text. Read each row separately from top to bottom. Each row may contain different text - do not assume rows are the same. Return a JSON array with exactly 14 strings, one for each row. Format: ["row1","row2","row3",...,"row14"], without Markdown or newlines.`;
+        // const llmColumnPrompt = `This image shows 2 columns with 14 rows of handwritten text. Read each row separately from top to bottom. Each row may contain different text - do not assume rows are the same. Return a JSON array with exactly 14 rows, without Markdown or newlines.`;
+          // "B/16  L225  N308A5  H",
+          // "9/11  LB 25  N308A5  H",
+          // "9/17  BE246  N206A5  H",
+          // "9/18  E-200  N206A5  H",
+          // "9/21  BE-200  N206A5  H",
+          // "9/22  BE-210  N206A5  H",
+          // "9/23  BE-200  N206A5  H",
+          // "9/24  BE-200  N206A5  H",
+          // "9/24  BE-200  N206A5  H",
+          // "9/24  IAI124  N206A5  H",
+          // "9/25  IAI124  N206A5  H",
+          // "9/26  L225  N308A5  H",
+          // "9/10  L225  N308A5  H",
+          // "9/17  LR25  N308A5  H"
+        // const llmColumnPrompt = `This image shows 2 columns (A,B), each with 14 rows of handwritten text. Return a JSON array with all 14 rows.`;
+        // const llmColumnPrompt = `This image shows 14 rows of handwritten text. Return a JSON array with all 14 rows.`;
+        // const llmColumnPrompt = `This image shows 2-4 columns with 14 rows of handwritten text. Read each row separately from top to bottom. Each row may contain different text - do not assume rows are the same. Return a JSON array with exactly 14 rows, without Markdown or newlines.`;
+        const llmColumnPrompt = `This image shows 2-4 columns with 14 rows of handwritten text. Read each row separately from top to bottom. Each row may contain different text - do not assume rows are the same. Return a JSON array with exactly 14 rows of CSV values, without Markdown or newlines.`;
+
+        console.log(`  LLM Column Prompt (first 200 chars): ${llmColumnPrompt.substring(0, 200)}...`);
+
+        console.log(`  LLM Column: Calling completion API for ${columnName}...`);
+        const llmColumnResponse = await llamaContext.completion(
+          {
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'image_url', image_url: { url: croppedColumn.uri } },
+                  { type: 'text', text: llmColumnPrompt },
+                ],
+              },
+            ],
+            n_predict: 500,
+            temperature: 0.0,
+            stop: [']', '\n\n', '```'],
+          },
+          (_data) => {
+            // Progress callback
           }
-        }
+        );
+
+        console.log(`  LLM Column: Response received`);
         
-        if (jsonMatch) {
-          const jsonStr = jsonMatch[0];
-          llmColumnResult = JSON.parse(jsonStr);
-          console.log(`  LLM Column Parsed: ${llmColumnResult.length} values`);
-          console.log(`  LLM Column Values: ${JSON.stringify(llmColumnResult)}`);
-        } else {
-          console.log(`  LLM Column: No JSON array found in response`);
+        let llmColumnText = llmColumnResponse.text || '';
+        console.log(`  LLM Column Response Text (first 1800 chars): ${llmColumnText.substring(0, 1800)}`);
+        
+        // Strip markdown code blocks if present
+        llmColumnText = llmColumnText.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+        llmColumnText = llmColumnText.trim();
+        
+        // Try to parse JSON array from response
+        try {
+          const jsonMatch = llmColumnText.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            // Check if it's a nested array (each row is an array)
+            if (Array.isArray(parsed) && parsed.length > 0 && Array.isArray(parsed[0])) {
+              // Convert nested arrays to strings by joining with spaces
+              llmColumnResult = parsed.map((row: any[]) => row.join(' '));
+            } else {
+              llmColumnResult = parsed;
+            }
+            console.log(`  LLM Column Parsed: ${llmColumnResult.length} values`);
+            console.log(`  LLM Column Values: ${JSON.stringify(llmColumnResult)}`);
+          } else {
+            console.log(`  LLM Column: No JSON array found in response`);
+          }
+        } catch (parseError: any) {
+          console.log(`  LLM Column Parse Error: ${parseError.message}`);
         }
-      } catch (parseError: any) {
-        console.log(`  LLM Column Parse Error: ${parseError.message}`);
+      } catch (error: any) {
+        console.log(`  LLM Column Error: ${error?.message || 'Unknown error'}`);
       }
-    } catch (error: any) {
-      console.log(`  LLM Column Error: ${error?.message || 'Unknown error'}`);
+    } else {
+      console.log(`  LLM OCR skipped: No LLM context available`);
     }
   } else {
-    console.log(`  LLM OCR skipped: No LLM context available`);
+    console.log(`  Skipping Vision OCR and column LLM for ${columnName} - will use per-cell LLM only`);
   }
 
   const extractions: any[] = [];
@@ -318,37 +220,41 @@ If a cell is empty, use "".`;
         // Ignore
       }
 
-      // Try to match Vision text by Y position
-      const cellYInCroppedImage = cellY - CROP_Y; // Offset from start of cropped image
+      // Try to match Vision text by Y position (skip for DATE column)
       let visionText = '';
       let visionRow = -1;
       let visionColumn = -1;
       let visionConfidence = 0;
       let matchedByVision = false;
 
-      if (columnOCR.tables && columnOCR.tables.length > 0) {
-        const table = columnOCR.tables[0];
-        for (const column of table.columns || []) {
-          for (const cell of column.cells || []) {
-            if (cell.boundingBox && cell.text && cell.text.trim()) {
-              const visionCellY = cell.boundingBox.yMin;
-              const yDiff = Math.abs(visionCellY - cellYInCroppedImage);
-              
-              if (yDiff < 20) { // 20px threshold like DATE
-                visionText = cell.text.trim();
-                visionRow = cell.rowIndex;
-                visionColumn = cell.columnIndex;
-                visionConfidence = cell.confidence || 0;
-                matchedByVision = true;
-                break;
+      if (!skipColumnProcessing) {
+        const cellYInCroppedImage = cellY - CROP_Y; // Offset from start of cropped image
+
+        if (columnOCR.tables && columnOCR.tables.length > 0) {
+          const table = columnOCR.tables[0];
+          for (const column of table.columns || []) {
+            for (const cell of column.cells || []) {
+              if (cell.boundingBox && cell.text && cell.text.trim()) {
+                const visionCellY = cell.boundingBox.yMin;
+                const yDiff = Math.abs(visionCellY - cellYInCroppedImage);
+                
+                if (yDiff < 20) { // 20px threshold like DATE
+                  visionText = cell.text.trim();
+                  visionRow = cell.rowIndex;
+                  visionColumn = cell.columnIndex;
+                  visionConfidence = cell.confidence || 0;
+                  matchedByVision = true;
+                  break;
+                }
               }
             }
+            if (matchedByVision) break;
           }
-          if (matchedByVision) break;
         }
       }
 
       // Determine if cell has content (Vision OR pixel analysis)
+      // For DATE column, use pixel analysis only
       const pixelFallback = !matchedByVision && fileSize > pixelThreshold;
       const hasContent = matchedByVision || pixelFallback;
       
@@ -387,7 +293,8 @@ If a cell is empty, use "".`;
   console.log(`  ${columnName}: ${extractions.filter((c: any) => c.hasContent).length}/14 cells with content`);
 
   // ========== HYBRID CORRECTION: Map LLM's compacted values to correct positions ==========
-  if (llmColumnResult.length > 0) {
+  // Skip for DATE column since we're not using column LLM
+  if (llmColumnResult.length > 0 && !skipColumnProcessing) {
     console.log(`  [Hybrid] Mapping LLM compacted values to correct positions...`);
     console.log(`  [Hybrid] LLM returned ${llmColumnResult.length} values (compacted, no empties)`);
     console.log(`  [Hybrid] LLM values: ${JSON.stringify(llmColumnResult)}`);
@@ -422,41 +329,34 @@ If a cell is empty, use "".`;
     });
     
     llmColumnResult = correctedLlmResult;
+  } else if (skipColumnProcessing) {
+    console.log(`  [Hybrid] Skipping hybrid correction for ${columnName} - using per-cell LLM only`);
   } else {
     console.log(`  [Hybrid] No LLM values returned, skipping correction`);
   }
 
   // ========== PER-CELL LLM VERIFICATION (DATE COLUMN ONLY) ==========
   if (columnName === 'DATE' && llamaContext) {
-    console.log(`  [Per-Cell] Starting per-cell LLM verification for DATE column...`);
+    console.log(`  [Per-Cell] Running per-cell LLM on all DATE cells with content...`);
     
-    // Identify cells that need verification (have content but LLM value looks suspicious)
+    // For DATE column, run per-cell LLM on ALL cells that have content
     const cellsToVerify: number[] = [];
     for (let i = 0; i < 14; i++) {
       const cell = extractions[i];
-      if (cell.hasContent && cell.llmColumnValue) {
-        // Check if this looks like part of a sequential pattern
-        // or if it's missing when we expect 14 values
+      if (cell.hasContent) {
         cellsToVerify.push(i);
       }
     }
     
-    console.log(`  [Per-Cell] Verifying ${cellsToVerify.length} cells with per-cell LLM...`);
-    
-    // Run per-cell LLM on suspicious cells
+    // Run per-cell LLM on all cells with content
     for (const idx of cellsToVerify) {
       const cell = extractions[idx];
       try {
         const perCellPrompt = `Read this handwritten date. Format is month/day (M/D or M/DD).
-
 The FIRST number before the "/" is the MONTH.
 The SECOND number after the "/" is the DAY.
-
 Look carefully at the first digit - is it 8 (two circles stacked) or 9 (circle with tail)?
-
 Answer with just the date in M/D format:`;
-
-        console.log(`  [Per-Cell] Row ${cell.row}: Calling LLM...` + perCellPrompt);
         const perCellResponse = await llamaContext.completion(
           {
             messages: [
@@ -480,8 +380,6 @@ Answer with just the date in M/D format:`;
         perCellText = perCellText.replace(/```json\s*/g, '').replace(/```\s*/g, '');
         perCellText = perCellText.replace(/["\[\]]/g, ''); // Remove quotes and brackets
         
-        console.log(`  [Per-Cell] Row ${cell.row}: Column="${cell.llmColumnValue}" -> PerCell="${perCellText}"`);
-        
         // Update with per-cell result
         cell.llmPerCellValue = perCellText;
         cell.llmColumnValue = perCellText; // Use per-cell as the final value
@@ -490,12 +388,10 @@ Answer with just the date in M/D format:`;
         console.log(`  [Per-Cell] Row ${cell.row}: Error - ${error.message}`);
       }
     }
-    
-    console.log(`  [Per-Cell] Completed ${cellsToVerify.length} per-cell verifications`);
+
     console.log(`  [Per-Cell] Final values before post-processing: ${JSON.stringify(llmColumnResult)}`);
     
     // ========== POST-PROCESSING: Detect month rollovers ==========
-    console.log(`  [Post-Process] Detecting month rollovers...`);
     let correctionsCount = 0;
     let currentMonth = null; // Track the current month as we go
     
@@ -516,14 +412,13 @@ Answer with just the date in M/D format:`;
             const prevDate = llmColumnResult[i - 1];
             const prevMatch = prevDate.match(/^(\d+)\/(\d+)$/);
             
-            if (prevMatch) {
+            if (prevMatch && currentMonth !== null) {
               const prevDay = parseInt(prevMatch[2]);
               
               // If day drops by more than 15 (e.g., 25 → 5), month rolled over
               if (currDay < prevDay && (prevDay - currDay) > 15) {
                 currentMonth = currentMonth + 1;
                 const correctedDate = `${currentMonth}/${currDay}`;
-                console.log(`  [Post-Process] Row ${i + 1}: Detected rollover (day ${prevDay} → ${currDay}), correcting ${currDate} to ${correctedDate}`);
                 llmColumnResult[i] = correctedDate;
                 extractions[i].llmColumnValue = correctedDate;
                 correctionsCount++;
@@ -531,7 +426,6 @@ Answer with just the date in M/D format:`;
               // If model read wrong month but we know we're in a later month
               else if (currMonth < currentMonth) {
                 const correctedDate = `${currentMonth}/${currDay}`;
-                console.log(`  [Post-Process] Row ${i + 1}: Month should be ${currentMonth}, correcting ${currDate} to ${correctedDate}`);
                 llmColumnResult[i] = correctedDate;
                 extractions[i].llmColumnValue = correctedDate;
                 correctionsCount++;
@@ -541,14 +435,56 @@ Answer with just the date in M/D format:`;
         }
       }
     }
-    
-    console.log(`  [Post-Process] Completed. Made ${correctionsCount} corrections.`);
     console.log(`  [Per-Cell] Final values after post-processing: ${JSON.stringify(llmColumnResult)}`);
+  }
+
+  // ========== SKIP PER-CELL LLM FOR AIRCRAFT MAKE AND MODEL ==========
+  if (columnName === 'AIRCRAFT MAKE AND MODEL') {
+    console.log(`  [Per-Cell] Skipping per-cell LLM for AIRCRAFT MAKE - using column results only`);
+    console.log(`  [Per-Cell] Final AIRCRAFT MAKE values (column): ${JSON.stringify(llmColumnResult)}`);
+  }
+
+  // ========== PER-CELL LLM VERIFICATION (AIRCRAFT IDENT COLUMN) ==========
+  if (columnName === 'AIRCRAFT IDENT' && llamaContext) {
+    console.log(`  [Per-Cell] Running per-cell LLM on all AIRCRAFT IDENT cells with content...`);
+    
+    for (let i = 0; i < 14; i++) {
+      const cell = extractions[i];
+      if (cell.hasContent) {
+        try {
+          const perCellResponse = await llamaContext.completion(
+            {
+              messages: [
+                {
+                  role: 'user',
+                  content: [
+                    { type: 'image_url', image_url: { url: cell.croppedImageUri } },
+                    { type: 'text', text: 'Read the text from this handwritten cell. Answer with just the text.' },
+                  ],
+                },
+              ],
+              n_predict: 20,
+              temperature: 0.1,
+              stop: ['\n', '```'],
+            },
+            (_data) => {}
+          );
+
+          let perCellText = (perCellResponse.text || '').trim().replace(/```json\s*/g, '').replace(/```\s*/g, '').replace(/["\[\]]/g, '');
+          cell.llmPerCellValue = perCellText;
+          llmColumnResult[i] = perCellText;
+        } catch (error: any) {
+          console.log(`  [Per-Cell] Row ${cell.row}: Error - ${error.message}`);
+        }
+      }
+    }
+
+    console.log(`  [Per-Cell] Final AIRCRAFT IDENT values: ${JSON.stringify(llmColumnResult)}`);
   }
 
   return {
     extractions,
-    croppedColumnUri: croppedColumn.uri,
+    croppedColumnUri: croppedColumn?.uri || null,
     columnBbox,
     ocrResult: {
       tablesCount: columnOCR.tables?.length || 0,
@@ -1211,1071 +1147,8 @@ export default function HybridFlightLogExtractor() {
     console.log(`[Process] Starting extraction with Request ID: ${requestId}`);
 
     try {
-      // Step 1: Get OCR bounding boxes
-      console.log('[Process] Step 1: Starting Vision OCR...');
-      setStatus('Running Vision OCR...');
-      setProgress(10);
-
-      const ocrStartTime = Date.now();
-      const ocrResult = await DualImageRecognizer({
-        leftUri: leftImage,
-        rightUri: rightImage,
-      });
-      const ocrDuration = ((Date.now() - ocrStartTime) / 1000).toFixed(1);
-
-      console.log(`[Process] OCR complete in ${ocrDuration}s:`, {
-        leftCells: ocrResult.cellData.left.length,
-        rightCells: ocrResult.cellData.right.length,
-        leftColumns: ocrResult.leftTable.columnCount,
-        rightColumns: ocrResult.rightTable.columnCount,
-        leftRows: ocrResult.leftTable.rowCount,
-        rightRows: ocrResult.rightTable.rowCount,
-      });
-
-      // ========== HIDE DETAILED OCR LOGGING ==========
-      // Uncomment below to see raw OCR results
-      /*
-      console.log('========== RAW OCR RESULTS ==========');
-      console.log('LEFT PAGE:');
-      console.log(JSON.stringify(ocrResult.leftTable, null, 2));
-      console.log('\nRIGHT PAGE:');
-      console.log(JSON.stringify(ocrResult.rightTable, null, 2));
-      console.log('\nLEFT CELL DATA (first 20):');
-      console.log(
-        JSON.stringify(ocrResult.cellData.left.slice(0, 20), null, 2)
-      );
-      console.log('\nRIGHT CELL DATA (first 20):');
-      console.log(
-        JSON.stringify(ocrResult.cellData.right.slice(0, 20), null, 2)
-      );
-      console.log('=====================================\n');
-      */
-
-      // ========== TEMPORARILY DISABLED: DATE, TURBOJET, TURBOPROP EXTRACTION ==========
-      // Commenting out to focus on TOTAL DURATION only
-      /*
-      // ========== EXTRACT DATE COLUMN FROM TABLE STRUCTURE ==========
-      console.log('[Process] Step 2: Extracting DATE column cells...');
-      setStatus('Finding DATE header...');
-      setProgress(40);
-
-      // Find the leftmost cell in the header row (row 0) - this should be DATE
-      const headerCells = ocrResult.cellData.left.filter((cell: any) => cell.row === 0);
-      if (headerCells.length === 0) {
-        throw new Error('No header cells found');
-      }
-      
-      // Sort by X position and take the leftmost
-      const dateHeader = headerCells.sort((a: any, b: any) => 
-        a.boundingBox.x - b.boundingBox.x
-      )[0];
-
-      console.log('[Process] Found leftmost header cell (DATE):', {
-        text: dateHeader.value,
-        row: dateHeader.row,
-        column: dateHeader.column,
-        bbox: dateHeader.boundingBox,
-      });
-
-      // Your actual coordinates from original document (973x724):
-      // Header Cell: 14,49,58,49
-      // Row 1 Cell:  14,102,58,32
-      // Row 2 Cell:  14,138,57,33
-      // Row 3 Cell:  14,176,57,32
-      // ...
-      // Row 14 Cell: 14,573,58,31
-      
-      // Final optimized dimensions:
-      // - X position: 11 pixels
-      // - Width: 63 pixels
-      // - Y position: 98 pixels
-      // - Cell height: 40 pixels
-      // - Row spacing: 36.25 pixels
-      const COLUMN_LEFT = 11;
-      const CELL_WIDTH = 63;
-      const CELL_HEIGHT = 40;
-      const FIRST_ROW_Y = 98;
-      const ROW_SPACING = 36.25;
-      
-      console.log('[Process] Creating 14 date cell bounding boxes...');
-      console.log(`  Using original image coordinates (973x724)`);
-      console.log(`  Column left: ${COLUMN_LEFT}`);
-      console.log(`  Cell dimensions: ${CELL_WIDTH}x${CELL_HEIGHT}`);
-      console.log(`  First row Y: ${FIRST_ROW_Y}`);
-      console.log(`  Row spacing: ${ROW_SPACING}px`);
-
-      setStatus('Cropping entire DATE column...');
-      setProgress(50);
-
-      // Calculate the bounding box for the entire DATE column (all 14 rows)
-      // Start with first data cell (not header) to avoid multi-line header confusion
-      const EXPAND_BOTTOM = 10; // Expand bottom to capture bottom grid line
-      
-      const lastRowY = FIRST_ROW_Y + (13 * ROW_SPACING); // Row 14 (index 13)
-      const columnHeight = (lastRowY + CELL_HEIGHT + EXPAND_BOTTOM) - FIRST_ROW_Y;
-      
-      // Start from first data cell, not the header
-      const fullColumnBbox = {
-        originX: 7, // Shift left to x=7
-        originY: FIRST_ROW_Y, // Start at first data cell (row 1)
-        width: 80, // Wider to help Vision detect table
-        height: columnHeight,
-      };
-      
-      console.log('[Process] Column bbox (starting at first data cell, not header):');
-      console.log(`  X: ${fullColumnBbox.originX}, Y: ${fullColumnBbox.originY} (first data cell)`);
-      console.log(`  Width: ${fullColumnBbox.width}, Height: ${fullColumnBbox.height}`);
-      console.log(`  Excludes header to avoid multi-line confusion`);
-
-      console.log('[Process] Full DATE column bbox (with header and grid lines):', fullColumnBbox);
-      console.log(`  Includes header, covers rows 1-14, total height: ${columnHeight}px`);
-
-      // Crop the entire DATE column
-      const croppedColumn = await ImageManipulator.manipulateAsync(
-        leftImage,
-        [{ crop: fullColumnBbox }],
-        { compress: 1, format: ImageManipulator.SaveFormat.PNG }
-      );
-
-      console.log('[Process] Cropped DATE column image:', croppedColumn.uri);
-      setStatus('Running Vision OCR on DATE column...');
-      setProgress(60);
-
-      // Run Vision OCR on the cropped DATE column
-      const columnOCR = await DocumentRecognizer({
-        uri: croppedColumn.uri,
-        searchCells: [],
-      });
-
-      console.log('========== DATE COLUMN OCR RESULTS ==========');
-      console.log('Full OCR result:', JSON.stringify(columnOCR, null, 2));
-      console.log('Tables detected:', columnOCR.tables?.length || 0);
-      if (columnOCR.tables && columnOCR.tables.length > 0) {
-        const table = columnOCR.tables[0];
-        console.log(`Table structure: ${table.rowCount} rows x ${table.columnCount} columns`);
-        console.log('Table data:', JSON.stringify(table, null, 2));
-      }
-      console.log('Cell confidences:', columnOCR.cellConfidences?.length || 0);
-      if (columnOCR.cellConfidences && columnOCR.cellConfidences.length > 0) {
-        console.log('Cell confidences data:', JSON.stringify(columnOCR.cellConfidences, null, 2));
-      }
-      console.log('Raw text length:', columnOCR.rawText?.length || 0);
-      console.log('Raw text:', columnOCR.rawText);
-      console.log('Matched cells:', columnOCR.matchedCells?.length || 0);
-      console.log('Column data:', columnOCR.columnData?.length || 0);
-      console.log('============================================\n');
-
-      setStatus('Extracting 14 date cells...');
-      setProgress(70);
-
-      const dateExtractions: any[] = [];
-
-      // Extract text from the column OCR results
-      let columnTexts: Array<{text: string, row: number, column: number, confidence: number}> = [];
-      
-      console.log('[Process] Analyzing Vision OCR results...');
-      console.log(`  Tables: ${columnOCR.tables?.length || 0}`);
-      console.log(`  Cell confidences: ${columnOCR.cellConfidences?.length || 0}`);
-      console.log(`  Raw text: ${columnOCR.rawText ? 'present' : 'empty'}`);
-      
-      if (columnOCR.tables && columnOCR.tables.length > 0) {
-        const table = columnOCR.tables[0];
-        console.log('[Process] Extracting from table structure...');
-        console.log(`  Table has ${table.rowCount} rows x ${table.columnCount} columns`);
-        console.log(`  Vision detected ${table.rowCount} rows, but we need 14 rows`);
-        console.log(`  This likely means Vision couldn't read some handwritten dates`);
-        
-        // Get all cells from the table
-        table.columns?.forEach((column: any) => {
-          console.log(`  Column ${column.columnIndex} has ${column.cells?.length || 0} cells`);
-          column.cells?.forEach((cell: any) => {
-            console.log(`    Cell [${cell.rowIndex},${cell.columnIndex}]: "${cell.text}" (bbox: ${JSON.stringify(cell.boundingBox)})`);
-            if (cell.text && cell.text.trim()) {
-              columnTexts.push({
-                text: cell.text.trim(),
-                row: cell.rowIndex,
-                column: cell.columnIndex,
-                confidence: cell.confidence || 0,
-              });
-            }
-          });
-        });
-        
-        // If Vision detected fewer rows than expected, we need to map them to our 14 logical rows
-        // We'll use the Y positions of Vision's detected cells to figure out which of our 14 rows they correspond to
-        console.log(`[Process] Mapping Vision's ${table.rowCount} detected rows to our 14 logical rows...`);
-      } else if (columnOCR.cellConfidences && columnOCR.cellConfidences.length > 0) {
-        console.log('[Process] Extracting from cellConfidences...');
-        columnOCR.cellConfidences.forEach((cell: any) => {
-          if (cell.text && cell.text.trim()) {
-            console.log(`  Cell [${cell.rowIndex},${cell.columnIndex}]: "${cell.text}" (conf: ${cell.confidence})`);
-            columnTexts.push({
-              text: cell.text.trim(),
-              row: cell.rowIndex,
-              column: cell.columnIndex,
-              confidence: cell.confidence,
-            });
-          }
-        });
-      } else if (columnOCR.rawText && columnOCR.rawText.trim()) {
-        console.log('[Process] Extracting from rawText (no table structure detected)...');
-        const lines = columnOCR.rawText.split(/[\n\r]+/).filter((l: string) => l.trim());
-        console.log(`  Found ${lines.length} text lines`);
-        lines.forEach((line: string, idx: number) => {
-          console.log(`  Line ${idx}: "${line.trim()}"`);
-          columnTexts.push({
-            text: line.trim(),
-            row: idx,
-            column: 0,
-            confidence: 0,
-          });
-        });
-      } else {
-        console.log('[Process] WARNING: No text data found in Vision OCR result!');
-      }
-
-      console.log(`[Process] Found ${columnTexts.length} text items in DATE column`);
-      console.log('Column texts:', JSON.stringify(columnTexts, null, 2));
-
-      // Now create our 14 date cells with individual crops and Vision mapping
-      // Since Vision may detect fewer rows than 14, we need to map based on Y position
-      for (let i = 0; i < 14; i++) {
-        const rowNum = i + 1;
-        const cellY = FIRST_ROW_Y + (i * ROW_SPACING);
-        
-        console.log(`[Process] Processing date cell ${rowNum}/14 (Y=${cellY})...`);
-
-        try {
-          // Create bounding box for this cell
-          const cellBbox = {
-            originX: COLUMN_LEFT,
-            originY: cellY,
-            width: CELL_WIDTH,
-            height: CELL_HEIGHT,
-          };
-
-          // Crop this specific cell for visual verification and pixel analysis
-          const croppedCell = await ImageManipulator.manipulateAsync(
-            leftImage,
-            [{ crop: cellBbox }],
-            { compress: 1, format: ImageManipulator.SaveFormat.PNG }
-          );
-
-          // Analyze pixels to detect if cell has content (handwriting)
-          // We'll check if there are enough dark pixels to indicate ink
-          let hasContentByPixels = false;
-          let darkPixelPercentage = 0;
-          
-          try {
-            // Get image data to analyze pixels
-            const imageInfo = await LegacyFileSystem.getInfoAsync(croppedCell.uri);
-            if (imageInfo.exists) {
-              // For now, we'll use a simple heuristic based on file size
-              // A cell with handwriting will have more data than an empty cell
-              // This is a rough approximation - ideally we'd analyze actual pixel data
-              const fileSize = (imageInfo as any).size || 0;
-              
-              // Typical empty cell: ~500-1000 bytes
-              // Cell with handwriting: ~1500+ bytes
-              // These thresholds may need tuning
-              hasContentByPixels = fileSize > 1200;
-              darkPixelPercentage = Math.min(100, (fileSize / 2000) * 100);
-              
-              console.log(`  File size: ${fileSize} bytes -> ${hasContentByPixels ? 'HAS CONTENT' : 'EMPTY'}`);
-            }
-          } catch (error: any) {
-            console.log(`  Could not analyze pixels: ${error.message}`);
-            // Fall back to Vision detection
-            hasContentByPixels = false;
-          }
-
-          // Find the corresponding text from column OCR by matching Y position
-          // Vision's bounding boxes are relative to the cropped column image
-          // Our cellY is relative to the original image, so we need to adjust
-          const cellYInCroppedImage = cellY - FIRST_ROW_Y; // Offset from start of cropped image
-          
-          let cellText = '';
-          let visionRow = -1;
-          let visionColumn = -1;
-          let confidence = 0;
-          let matchedByPosition = false;
-          
-          // Try to find a Vision cell whose Y position is close to this logical row
-          if (columnOCR.tables && columnOCR.tables.length > 0) {
-            const table = columnOCR.tables[0];
-            for (const column of table.columns || []) {
-              for (const cell of column.cells || []) {
-                if (cell.boundingBox && cell.text && cell.text.trim()) {
-                  // Check if this Vision cell's Y position matches our logical row
-                  const visionCellY = cell.boundingBox.yMin;
-                  const yDiff = Math.abs(visionCellY - cellYInCroppedImage);
-                  
-                  // If within 20 pixels, consider it a match
-                  if (yDiff < 20) {
-                    cellText = cell.text.trim();
-                    visionRow = cell.rowIndex;
-                    visionColumn = cell.columnIndex;
-                    confidence = cell.confidence || 0;
-                    matchedByPosition = true;
-                    console.log(`  Matched by Y position: Vision cell at Y=${visionCellY} matches our Y=${cellYInCroppedImage} (diff=${yDiff}px)`);
-                    break;
-                  }
-                }
-              }
-              if (matchedByPosition) break;
-            }
-          }
-          
-          // Determine if cell has content: use pixel analysis OR Vision detection
-          const hasContent = hasContentByPixels || matchedByPosition;
-          
-          if (!matchedByPosition && hasContentByPixels) {
-            console.log(`  Vision missed this cell, but pixel analysis detected content`);
-          } else if (!hasContent) {
-            console.log(`  No content detected by Vision or pixel analysis`);
-          }
-
-          dateExtractions.push({
-            row: rowNum,
-            column: 0,
-            text: cellText,
-            confidence: confidence,
-            boundingBox: {
-              x: cellBbox.originX,
-              y: cellBbox.originY,
-              width: cellBbox.width,
-              height: cellBbox.height,
-            },
-            croppedImageUri: croppedCell.uri,
-            visionRow: visionRow,
-            visionColumn: visionColumn,
-            matchedByPosition: matchedByPosition,
-            hasContentByPixels: hasContentByPixels,
-            hasContent: hasContent,
-            darkPixelPercentage: darkPixelPercentage,
-          });
-
-          console.log(`  Row ${rowNum}: ${hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (Vision: "${cellText}", Pixels: ${hasContentByPixels})`);
-        } catch (error: any) {
-          console.error(`  Error processing cell ${rowNum}:`, error.message);
-          dateExtractions.push({
-            row: rowNum,
-            column: 0,
-            text: '',
-            confidence: 0,
-            boundingBox: {
-              x: COLUMN_LEFT,
-              y: cellY,
-              width: CELL_WIDTH,
-              height: CELL_HEIGHT,
-            },
-            error: error.message,
-          });
-        }
-
-        setProgress(70 + (i / 14) * 25);
-      }
-
-      console.log('========== FINAL DATE EXTRACTIONS ==========');
-      console.log(JSON.stringify(dateExtractions, null, 2));
-      console.log('===========================================\n');
-
-      // ========== EXTRACT TURBOJET COLUMN ==========
-      console.log('[Process] Step 3: Extracting TURBOJET column cells...');
-      setStatus('Extracting TURBOJET column...');
-      setProgress(50);
-
-      // TURBOJET column coordinates from user
-      // Full column: x=566, y=101, width=67, height=34
-      // Sub-column 1 (hours): x=566, width=44
-      // Sub-column 2 (tenths): x=612, width=21
-      const TURBOJET_X = 566;
-      const TURBOJET_Y = 101; // First row Y
-      const TURBOJET_FULL_WIDTH = 67;
-      const TURBOJET_CELL_HEIGHT = 34;
-      const TURBOJET_ROW_SPACING = 36.25; // Same as DATE column
-      
-      const TURBOJET_SUB1_X = 566;
-      const TURBOJET_SUB1_WIDTH = 44;
-      const TURBOJET_SUB2_X = 612;
-      const TURBOJET_SUB2_WIDTH = 21;
-
-      console.log('[Process] TURBOJET column has 2 sub-columns:');
-      console.log(`  Sub-column 1 (hours): x=${TURBOJET_SUB1_X}, width=${TURBOJET_SUB1_WIDTH}`);
-      console.log(`  Sub-column 2 (tenths): x=${TURBOJET_SUB2_X}, width=${TURBOJET_SUB2_WIDTH}`);
-
-      // Crop the entire TURBOJET column for Vision OCR
-      // Expand to include grid lines and adjacent columns for better table detection
-      const TURBOJET_CROP_Y = 96; // Adjusted for image slant
-      const lastTurbojetRowY = TURBOJET_Y + (13 * TURBOJET_ROW_SPACING);
-      const turbojetColumnHeight = (lastTurbojetRowY + TURBOJET_CELL_HEIGHT + 10) - TURBOJET_CROP_Y;
-      
-      const turbojetColumnBbox = {
-        originX: TURBOJET_X - 7, // 3 pixels to the right from -10
-        originY: TURBOJET_CROP_Y, // Start at Y=96 to account for image slant
-        width: TURBOJET_FULL_WIDTH + 30, // Reduced from +50, now only 30 pixels wider
-        height: turbojetColumnHeight,
-      };
-
-      console.log('[Process] Cropping TURBOJET column (expanded for Vision table detection):', turbojetColumnBbox);
-      console.log(`  Original: x=${TURBOJET_X}, y=${TURBOJET_Y}, width=${TURBOJET_FULL_WIDTH}`);
-      console.log(`  Expanded: x=${turbojetColumnBbox.originX}, y=${turbojetColumnBbox.originY}, width=${turbojetColumnBbox.width}`);
-
-      const croppedTurbojetColumn = await ImageManipulator.manipulateAsync(
-        leftImage,
-        [{ crop: turbojetColumnBbox }],
-        { compress: 1, format: ImageManipulator.SaveFormat.PNG }
-      );
-
-      console.log('[Process] Cropped TURBOJET column image:', croppedTurbojetColumn.uri);
-
-      // Run Vision OCR on the cropped TURBOJET column
-      const turbojetOCR = await DocumentRecognizer({
-        uri: croppedTurbojetColumn.uri,
-        searchCells: [],
-      });
-
-      console.log('========== TURBOJET COLUMN OCR RESULTS ==========');
-      console.log('Tables detected:', turbojetOCR.tables?.length || 0);
-      if (turbojetOCR.tables && turbojetOCR.tables.length > 0) {
-        const table = turbojetOCR.tables[0];
-        console.log(`Table structure: ${table.rowCount} rows x ${table.columnCount} columns`);
-        console.log('Table data:', JSON.stringify(table, null, 2));
-      }
-      console.log('Cell confidences:', turbojetOCR.cellConfidences?.length || 0);
-      console.log('Raw text:', turbojetOCR.rawText);
-      console.log('=================================================\n');
-
-      // Extract Vision text from TURBOJET column
-      let turbojetVisionTexts: Array<{text: string, row: number, column: number, confidence: number}> = [];
-      
-      if (turbojetOCR.tables && turbojetOCR.tables.length > 0) {
-        const table = turbojetOCR.tables[0];
-        console.log('[Process] Extracting Vision text from TURBOJET table...');
-        
-        table.columns?.forEach((column: any) => {
-          console.log(`  Column ${column.columnIndex} has ${column.cells?.length || 0} cells`);
-          column.cells?.forEach((cell: any) => {
-            console.log(`    Cell [${cell.rowIndex},${cell.columnIndex}]: "${cell.text}" (bbox: ${JSON.stringify(cell.boundingBox)})`);
-            if (cell.text && cell.text.trim()) {
-              turbojetVisionTexts.push({
-                text: cell.text.trim(),
-                row: cell.rowIndex,
-                column: cell.columnIndex,
-                confidence: cell.confidence || 0,
-              });
-            }
-          });
-        });
-      }
-
-      console.log(`[Process] Found ${turbojetVisionTexts.length} Vision text items in TURBOJET column`);
-
-      setStatus('Extracting 14 TURBOJET cells...');
-      setProgress(60);
-
-      const turbojetExtractions: any[] = [];
-
-      // Extract each of the 14 rows
-      for (let i = 0; i < 14; i++) {
-        const rowNum = i + 1;
-        const cellY = TURBOJET_Y + (i * TURBOJET_ROW_SPACING);
-        
-        console.log(`[Process] Processing TURBOJET cell ${rowNum}/14 (Y=${cellY})...`);
-
-        try {
-          // Crop the full cell (both sub-columns)
-          const fullCellBbox = {
-            originX: TURBOJET_X,
-            originY: cellY,
-            width: TURBOJET_FULL_WIDTH,
-            height: TURBOJET_CELL_HEIGHT,
-          };
-
-          const croppedFullCell = await ImageManipulator.manipulateAsync(
-            leftImage,
-            [{ crop: fullCellBbox }],
-            { compress: 1, format: ImageManipulator.SaveFormat.PNG }
-          );
-
-          // Analyze pixels for full cell using PNG file size as heuristic
-          // Cells with handwritten content will have more complex pixel patterns
-          let hasContentByPixels = false;
-          let fileSize = 0;
-          
-          try {
-            const imageInfo = await LegacyFileSystem.getInfoAsync(croppedFullCell.uri);
-            
-            if (imageInfo.exists) {
-              fileSize = (imageInfo as any).size || 0;
-              
-              // Empirical thresholds for TURBOJET cells with shaded background:
-              // Empty rows: 4256-4796 bytes
-              // Content rows: 5586-6525 bytes
-              // Borderline rows 8-9: 5399-5400 bytes (actually empty)
-              // Set threshold between empty (4796) and real content (5586)
-              const CONTENT_THRESHOLD = 5500; // Bytes - raised to avoid false positives on rows 8-9
-              
-              hasContentByPixels = fileSize > CONTENT_THRESHOLD;
-              
-              console.log(`  Pixel analysis: ${fileSize} bytes -> ${hasContentByPixels ? 'HAS CONTENT' : 'EMPTY'} (threshold: ${CONTENT_THRESHOLD})`);
-            }
-          } catch (error: any) {
-            console.log(`  Could not analyze pixels: ${error.message}`);
-          }
-
-          // Also crop individual sub-columns for visual inspection
-          const sub1Bbox = {
-            originX: TURBOJET_SUB1_X,
-            originY: cellY,
-            width: TURBOJET_SUB1_WIDTH,
-            height: TURBOJET_CELL_HEIGHT,
-          };
-
-          const sub2Bbox = {
-            originX: TURBOJET_SUB2_X,
-            originY: cellY,
-            width: TURBOJET_SUB2_WIDTH,
-            height: TURBOJET_CELL_HEIGHT,
-          };
-
-          const croppedSub1 = await ImageManipulator.manipulateAsync(
-            leftImage,
-            [{ crop: sub1Bbox }],
-            { compress: 1, format: ImageManipulator.SaveFormat.PNG }
-          );
-
-          const croppedSub2 = await ImageManipulator.manipulateAsync(
-            leftImage,
-            [{ crop: sub2Bbox }],
-            { compress: 1, format: ImageManipulator.SaveFormat.PNG }
-          );
-
-          // Analyze sub-columns with same approach
-          let sub1HasContent = false;
-          let sub2HasContent = false;
-          let sub1FileSize = 0;
-          let sub2FileSize = 0;
-
-          try {
-            const sub1Info = await LegacyFileSystem.getInfoAsync(croppedSub1.uri);
-            const sub2Info = await LegacyFileSystem.getInfoAsync(croppedSub2.uri);
-            
-            if (sub1Info.exists) {
-              sub1FileSize = (sub1Info as any).size || 0;
-              // Sub-column 1 is wider
-              // Empty: 2840-3183, Content: 3581-4301
-              // Threshold between empty (3183) and content (3581)
-              sub1HasContent = sub1FileSize > 3400;
-              console.log(`  Sub1 analysis: ${sub1FileSize} bytes -> ${sub1HasContent ? 'HAS CONTENT' : 'EMPTY'}`);
-            }
-            
-            if (sub2Info.exists) {
-              sub2FileSize = (sub2Info as any).size || 0;
-              // Sub-column 2 is narrower
-              // Empty: 1425-1840, Content: 2143-2421
-              // Threshold between empty (1840) and content (2143)
-              sub2HasContent = sub2FileSize > 2000;
-              console.log(`  Sub2 analysis: ${sub2FileSize} bytes -> ${sub2HasContent ? 'HAS CONTENT' : 'EMPTY'}`);
-            }
-          } catch (error: any) {
-            console.log(`  Could not analyze sub-columns: ${error.message}`);
-          }
-
-          // STEP 1: Try to match Vision text by Y position from column-level OCR
-          const cellYInCroppedImage = cellY - TURBOJET_CROP_Y;
-          let visionText = '';
-          let visionRow = -1;
-          let visionColumn = -1;
-          let visionConfidence = 0;
-          let matchedByVision = false;
-
-          if (turbojetOCR.tables && turbojetOCR.tables.length > 0) {
-            const table = turbojetOCR.tables[0];
-            for (const column of table.columns || []) {
-              for (const cell of column.cells || []) {
-                if (cell.boundingBox && cell.text && cell.text.trim()) {
-                  const visionCellY = cell.boundingBox.yMin;
-                  const visionCellHeight = cell.boundingBox.yMax - cell.boundingBox.yMin;
-                  const yDiff = Math.abs(visionCellY - cellYInCroppedImage);
-                  
-                  // Reject merged cells - Vision sometimes merges multiple rows
-                  // Normal cell height should be around 34-40 pixels
-                  // Merged cells can be 100+ pixels tall
-                  const MAX_CELL_HEIGHT = 50; // Reject cells taller than this
-                  
-                  if (visionCellHeight > MAX_CELL_HEIGHT) {
-                    console.log(`  Rejecting Vision cell: height=${visionCellHeight}px (merged cell, max=${MAX_CELL_HEIGHT}px)`);
-                    continue;
-                  }
-                  
-                  // Very tight threshold for TURBOJET to avoid false matches
-                  if (yDiff < 10) {
-                    visionText = cell.text.trim();
-                    visionRow = cell.rowIndex;
-                    visionColumn = cell.columnIndex;
-                    visionConfidence = cell.confidence || 0;
-                    matchedByVision = true;
-                    console.log(`  Matched Vision text: "${visionText}" at Y=${visionCellY} (diff=${yDiff}px, height=${visionCellHeight}px)`);
-                    break;
-                  }
-                }
-              }
-              if (matchedByVision) break;
-            }
-          }
-          
-          if (!matchedByVision) {
-            console.log(`  No Vision match found for Y=${cellYInCroppedImage} (threshold: 10px)`);
-          }
-
-          // STEP 2: Try OCR on individual cell crop to detect content
-          // This avoids the shaded background issue and Vision's row merging
-          let cellHasVisionText = false;
-          let cellVisionText = '';
-          
-          try {
-            // Run Vision OCR on the individual cell crop
-            const cellOCR = await DocumentRecognizer({
-              uri: croppedFullCell.uri,
-              searchCells: [],
-            });
-            
-            // Check if there's actual text content (not just whitespace or grid lines)
-            if (cellOCR.rawText && cellOCR.rawText.trim().length > 0) {
-              // Filter out common OCR artifacts from grid lines
-              const cleanText = cellOCR.rawText.trim();
-              const isRealContent = cleanText.length > 0 && 
-                                   !cleanText.match(/^[|\-_\s]+$/); // Not just lines/spaces
-              
-              if (isRealContent) {
-                cellHasVisionText = true;
-                cellVisionText = cleanText;
-                console.log(`  Individual cell Vision OCR: "${cellVisionText}"`);
-              } else {
-                console.log(`  Individual cell Vision OCR found only grid lines/artifacts: "${cleanText}"`);
-              }
-            } else {
-              console.log(`  Individual cell Vision OCR: no text found`);
-            }
-          } catch (error: any) {
-            console.log(`  Could not run Vision OCR on individual cell: ${error.message}`);
-          }
-
-          // Use individual cell Vision text if available and no column-level match
-          if (cellHasVisionText && !matchedByVision) {
-            visionText = cellVisionText;
-            matchedByVision = true;
-            console.log(`  Using individual cell Vision text: "${visionText}"`);
-          }
-
-          // STEP 3: Determine if cell has content
-          // Primary: Vision OCR (most reliable when it works)
-          // Fallback: Pixel analysis for cases where Vision can't read handwriting
-          // Use conservative threshold to avoid false positives
-          
-          // Pixel analysis as fallback: only trust it for clearly high file sizes
-          // Empty rows: 4256-4796 bytes
-          // Borderline (actually empty): 5399-5400 bytes
-          // Clear content: 5586-6525 bytes
-          // Use threshold of 5800 to only catch clear content cases
-          const pixelFallback = !cellHasVisionText && !matchedByVision && fileSize > 5800;
-          
-          const hasContent = cellHasVisionText || matchedByVision || pixelFallback;
-          
-          const detectionMethod = cellHasVisionText ? 'Individual Cell OCR' : 
-                                 (matchedByVision ? 'Column Y-Position Match' : 
-                                 (pixelFallback ? 'Pixel Fallback' : 'None'));
-          
-          console.log(`  Detection: cellOCR=${cellHasVisionText}, columnMatch=${matchedByVision}, pixelFallback=${pixelFallback} (${fileSize}b > 5800) -> ${hasContent ? 'HAS CONTENT' : 'EMPTY'}`);
-
-          turbojetExtractions.push({
-            row: rowNum,
-            column: 'TURBOJET',
-            hasContent: hasContent,
-            hasContentByPixels: hasContentByPixels,
-            fileSize: fileSize,
-            sub1HasContent: sub1HasContent,
-            sub1FileSize: sub1FileSize,
-            sub2HasContent: sub2HasContent,
-            sub2FileSize: sub2FileSize,
-            visionText: visionText,
-            visionRow: visionRow,
-            visionColumn: visionColumn,
-            visionConfidence: visionConfidence,
-            matchedByVision: matchedByVision,
-            cellHasVisionText: cellHasVisionText,
-            detectionMethod: detectionMethod,
-            boundingBox: {
-              x: fullCellBbox.originX,
-              y: fullCellBbox.originY,
-              width: fullCellBbox.width,
-              height: fullCellBbox.height,
-            },
-            croppedImageUri: croppedFullCell.uri,
-            croppedSub1Uri: croppedSub1.uri,
-            croppedSub2Uri: croppedSub2.uri,
-          });
-
-          console.log(`  Row ${rowNum}: ${hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${detectionMethod})`);
-        } catch (error: any) {
-          console.error(`  Error processing TURBOJET cell ${rowNum}:`, error.message);
-          turbojetExtractions.push({
-            row: rowNum,
-            column: 'TURBOJET',
-            hasContent: false,
-            error: error.message,
-          });
-        }
-
-        setProgress(60 + (i / 14) * 30);
-      }
-
-      console.log('========== FINAL TURBOJET EXTRACTIONS ==========');
-      console.log(JSON.stringify(turbojetExtractions, null, 2));
-      console.log('================================================\n');
-
-      // ========== EXTRACT TURBOPROP COLUMN ==========
-      console.log('[Process] Step 4: Extracting TURBOPROP column cells...');
-      setStatus('Extracting TURBOPROP column...');
-      setProgress(70);
-
-      // TURBOPROP column coordinates from user
-      const TURBOPROP_X = 775;
-      const TURBOPROP_Y = 101;
-      const TURBOPROP_FULL_WIDTH = 74;
-      const TURBOPROP_CELL_HEIGHT = 34;
-      const TURBOPROP_ROW_SPACING = 36.25; // Same as other columns
-      
-      // Slant compensation: image appears slanted, rows on right are slightly higher
-      // TURBOPROP is ~209px right of TURBOJET, compensate Y by moving up slightly
-      const SLANT_Y_ADJUSTMENT = -2; // Move up 2 pixels to compensate for slant
-      
-      // Sub-columns (similar to TURBOJET)
-      const TURBOPROP_SUB1_X = 775;
-      const TURBOPROP_SUB1_WIDTH = 48; // Estimate - adjust if needed
-      const TURBOPROP_SUB2_X = 775 + 48 + 1; // After sub1 + divider line
-      const TURBOPROP_SUB2_WIDTH = 74 - 48 - 1; // Remaining width
-
-      console.log('[Process] TURBOPROP column has 2 sub-columns:');
-      console.log(`  Full column: x=${TURBOPROP_X}, y=${TURBOPROP_Y}, width=${TURBOPROP_FULL_WIDTH}`);
-      console.log(`  Sub-column 1 (hours): x=${TURBOPROP_SUB1_X}, width=${TURBOPROP_SUB1_WIDTH}`);
-      console.log(`  Sub-column 2 (tenths): x=${TURBOPROP_SUB2_X}, width=${TURBOPROP_SUB2_WIDTH}`);
-
-      // Crop the entire TURBOPROP column for Vision OCR
-      // Expand to include grid lines for better table detection
-      const TURBOPROP_CROP_X = TURBOPROP_X - 12; // Expand left (5 more pixels than before)
-      const TURBOPROP_CROP_Y = 96; // Start slightly above first cell
-      const TURBOPROP_CROP_WIDTH = TURBOPROP_FULL_WIDTH + 20; // Expand right
-      
-      const lastTurbopropRowY = TURBOPROP_Y + (13 * TURBOPROP_ROW_SPACING);
-      const turbopropColumnHeight = (lastTurbopropRowY + TURBOPROP_CELL_HEIGHT + 10) - TURBOPROP_CROP_Y;
-      
-      const turbopropColumnBbox = {
-        originX: TURBOPROP_CROP_X,
-        originY: TURBOPROP_CROP_Y,
-        width: TURBOPROP_CROP_WIDTH,
-        height: turbopropColumnHeight,
-      };
-
-      console.log('[Process] Cropping TURBOPROP column (expanded for Vision table detection):', turbopropColumnBbox);
-      console.log(`  Original: x=${TURBOPROP_X}, y=${TURBOPROP_Y}, width=${TURBOPROP_FULL_WIDTH}`);
-      console.log(`  Expanded: x=${turbopropColumnBbox.originX}, y=${turbopropColumnBbox.originY}, width=${turbopropColumnBbox.width}`);
-
-      const croppedTurbopropColumn = await ImageManipulator.manipulateAsync(
-        leftImage,
-        [{ crop: turbopropColumnBbox }],
-        { compress: 1, format: ImageManipulator.SaveFormat.PNG }
-      );
-
-      console.log('[Process] Cropped TURBOPROP column image:', croppedTurbopropColumn.uri);
-
-      // Run Vision OCR on the cropped TURBOPROP column
-      setStatus('Running Vision OCR on TURBOPROP column...');
-      const turbopropOCR = await DocumentRecognizer({
-        uri: croppedTurbopropColumn.uri,
-        searchCells: [],
-      });
-
-      console.log('========== TURBOPROP COLUMN OCR RESULTS ==========');
-      console.log('Tables detected:', turbopropOCR.tables?.length || 0);
-      if (turbopropOCR.tables && turbopropOCR.tables.length > 0) {
-        const table = turbopropOCR.tables[0];
-        console.log(`Table structure: ${table.rowCount} rows x ${table.columnCount} columns`);
-        console.log('Table data:', JSON.stringify(table, null, 2));
-      }
-      console.log('Cell confidences:', turbopropOCR.cellConfidences?.length || 0);
-      console.log('Raw text:', turbopropOCR.rawText);
-      console.log('=================================================\n');
-
-      // Extract Vision text from TURBOPROP column
-      setStatus('Extracting 14 TURBOPROP cells...');
-      let turbopropVisionTexts: Array<{text: string, row: number, column: number, confidence: number}> = [];
-      
-      console.log('[Process] Extracting Vision text from TURBOPROP table...');
-      if (turbopropOCR.tables && turbopropOCR.tables.length > 0) {
-        const table = turbopropOCR.tables[0];
-        table.columns?.forEach((column: any) => {
-          console.log(`  Column ${column.columnIndex} has ${column.cells?.length || 0} cells`);
-          column.cells?.forEach((cell: any) => {
-            console.log(`    Cell [${cell.rowIndex},${cell.columnIndex}]: "${cell.text}" (bbox: ${JSON.stringify(cell.boundingBox)})`);
-            if (cell.text && cell.text.trim()) {
-              turbopropVisionTexts.push({
-                text: cell.text.trim(),
-                row: cell.rowIndex,
-                column: cell.columnIndex,
-                confidence: cell.confidence || 0,
-              });
-            }
-          });
-        });
-      }
-
-      console.log(`[Process] Found ${turbopropVisionTexts.length} Vision text items in TURBOPROP column`);
-
-      setStatus('Extracting 14 TURBOPROP cells...');
-      setProgress(75);
-
-      const turbopropExtractions: any[] = [];
-
-      // Extract each of the 14 rows
-      for (let i = 0; i < 14; i++) {
-        const rowNum = i + 1;
-        const cellY = TURBOPROP_Y + (i * TURBOPROP_ROW_SPACING) + SLANT_Y_ADJUSTMENT;
-        
-        console.log(`[Process] Processing TURBOPROP cell ${rowNum}/14 (Y=${cellY})...`);
-
-        try {
-          // Crop the full cell (both sub-columns)
-          const fullCellBbox = {
-            originX: TURBOPROP_X,
-            originY: cellY,
-            width: TURBOPROP_FULL_WIDTH,
-            height: TURBOPROP_CELL_HEIGHT,
-          };
-
-          const croppedFullCell = await ImageManipulator.manipulateAsync(
-            leftImage,
-            [{ crop: fullCellBbox }],
-            { compress: 1, format: ImageManipulator.SaveFormat.PNG }
-          );
-
-          // Analyze pixels for full cell using PNG file size as heuristic
-          let hasContentByPixels = false;
-          let fileSize = 0;
-          
-          try {
-            const imageInfo = await LegacyFileSystem.getInfoAsync(croppedFullCell.uri);
-            
-            if (imageInfo.exists) {
-              fileSize = (imageInfo as any).size || 0;
-              const CONTENT_THRESHOLD = 5500;
-              hasContentByPixels = fileSize > CONTENT_THRESHOLD;
-              console.log(`  Pixel analysis: ${fileSize} bytes -> ${hasContentByPixels ? 'HAS CONTENT' : 'EMPTY'} (threshold: ${CONTENT_THRESHOLD})`);
-            }
-          } catch (error: any) {
-            console.log(`  Could not analyze pixels: ${error.message}`);
-          }
-
-          // Also crop individual sub-columns for visual inspection
-          const sub1Bbox = {
-            originX: TURBOPROP_SUB1_X,
-            originY: cellY,
-            width: TURBOPROP_SUB1_WIDTH,
-            height: TURBOPROP_CELL_HEIGHT,
-          };
-
-          const sub2Bbox = {
-            originX: TURBOPROP_SUB2_X,
-            originY: cellY,
-            width: TURBOPROP_SUB2_WIDTH,
-            height: TURBOPROP_CELL_HEIGHT,
-          };
-
-          const croppedSub1 = await ImageManipulator.manipulateAsync(
-            leftImage,
-            [{ crop: sub1Bbox }],
-            { compress: 1, format: ImageManipulator.SaveFormat.PNG }
-          );
-
-          const croppedSub2 = await ImageManipulator.manipulateAsync(
-            leftImage,
-            [{ crop: sub2Bbox }],
-            { compress: 1, format: ImageManipulator.SaveFormat.PNG }
-          );
-
-          // Analyze sub-columns
-          let sub1HasContent = false;
-          let sub2HasContent = false;
-          let sub1FileSize = 0;
-          let sub2FileSize = 0;
-
-          try {
-            const sub1Info = await LegacyFileSystem.getInfoAsync(croppedSub1.uri);
-            const sub2Info = await LegacyFileSystem.getInfoAsync(croppedSub2.uri);
-            
-            if (sub1Info.exists) {
-              sub1FileSize = (sub1Info as any).size || 0;
-              sub1HasContent = sub1FileSize > 3400;
-              console.log(`  Sub1 analysis: ${sub1FileSize} bytes -> ${sub1HasContent ? 'HAS CONTENT' : 'EMPTY'}`);
-            }
-            
-            if (sub2Info.exists) {
-              sub2FileSize = (sub2Info as any).size || 0;
-              sub2HasContent = sub2FileSize > 2000;
-              console.log(`  Sub2 analysis: ${sub2FileSize} bytes -> ${sub2HasContent ? 'HAS CONTENT' : 'EMPTY'}`);
-            }
-          } catch (error: any) {
-            console.log(`  Could not analyze sub-columns: ${error.message}`);
-          }
-
-          // STEP 1: Try to match Vision text by Y position from column-level OCR
-          const cellYInCroppedImage = cellY - TURBOPROP_CROP_Y;
-          let visionText = '';
-          let visionRow = -1;
-          let visionColumn = -1;
-          let visionConfidence = 0;
-          let matchedByVision = false;
-
-          if (turbopropOCR.tables && turbopropOCR.tables.length > 0) {
-            const table = turbopropOCR.tables[0];
-            for (const column of table.columns || []) {
-              for (const cell of column.cells || []) {
-                if (cell.boundingBox && cell.text && cell.text.trim()) {
-                  const visionCellY = cell.boundingBox.yMin;
-                  const visionCellHeight = cell.boundingBox.yMax - cell.boundingBox.yMin;
-                  const yDiff = Math.abs(visionCellY - cellYInCroppedImage);
-                  
-                  // Reject merged cells
-                  const MAX_CELL_HEIGHT = 50;
-                  
-                  if (visionCellHeight > MAX_CELL_HEIGHT) {
-                    console.log(`  Rejecting Vision cell: height=${visionCellHeight}px (merged cell, max=${MAX_CELL_HEIGHT}px)`);
-                    continue;
-                  }
-                  
-                  // Tight threshold
-                  if (yDiff < 10) {
-                    visionText = cell.text.trim();
-                    visionRow = cell.rowIndex;
-                    visionColumn = cell.columnIndex;
-                    visionConfidence = cell.confidence || 0;
-                    matchedByVision = true;
-                    console.log(`  Matched Vision text: "${visionText}" at Y=${visionCellY} (diff=${yDiff}px, height=${visionCellHeight}px)`);
-                    break;
-                  }
-                }
-              }
-              if (matchedByVision) break;
-            }
-          }
-          
-          if (!matchedByVision) {
-            console.log(`  No Vision match found for Y=${cellYInCroppedImage} (threshold: 10px)`);
-          }
-
-          // STEP 2: Try OCR on individual cell crop
-          let cellHasVisionText = false;
-          let cellVisionText = '';
-          
-          try {
-            const cellOCR = await DocumentRecognizer({
-              uri: croppedFullCell.uri,
-              searchCells: [],
-            });
-            
-            if (cellOCR.rawText && cellOCR.rawText.trim().length > 0) {
-              const cleanText = cellOCR.rawText.trim();
-              const isRealContent = cleanText.length > 0 && 
-                                   !cleanText.match(/^[|\-_\s]+$/);
-              
-              if (isRealContent) {
-                cellHasVisionText = true;
-                cellVisionText = cleanText;
-                console.log(`  Individual cell Vision OCR: "${cellVisionText}"`);
-              } else {
-                console.log(`  Individual cell Vision OCR found only grid lines/artifacts: "${cleanText}"`);
-              }
-            } else {
-              console.log(`  Individual cell Vision OCR: no text found`);
-            }
-          } catch (error: any) {
-            console.log(`  Could not run Vision OCR on individual cell: ${error.message}`);
-          }
-
-          // Use individual cell Vision text if available and no column-level match
-          if (cellHasVisionText && !matchedByVision) {
-            visionText = cellVisionText;
-            matchedByVision = true;
-            console.log(`  Using individual cell Vision text: "${visionText}"`);
-          }
-
-          // STEP 3: Determine if cell has content
-          // Primary: Vision OCR, Fallback: Pixel analysis with conservative threshold
-          // TURBOPROP has lighter shading than TURBOJET, so lower threshold
-          // Empty rows: 3072-3516 bytes
-          // Content rows: 3927-4344 bytes
-          // Use threshold of 3850 to catch content rows Vision misses
-          const pixelFallback = !cellHasVisionText && !matchedByVision && fileSize > 3850;
-          
-          const hasContent = cellHasVisionText || matchedByVision || pixelFallback;
-          
-          const detectionMethod = cellHasVisionText ? 'Individual Cell OCR' : 
-                                 (matchedByVision ? 'Column Y-Position Match' : 
-                                 (pixelFallback ? 'Pixel Fallback' : 'None'));
-          
-          console.log(`  Detection: cellOCR=${cellHasVisionText}, columnMatch=${matchedByVision}, pixelFallback=${pixelFallback} (${fileSize}b > 5800) -> ${hasContent ? 'HAS CONTENT' : 'EMPTY'}`);
-
-          turbopropExtractions.push({
-            row: rowNum,
-            column: 'TURBOPROP',
-            hasContent: hasContent,
-            hasContentByPixels: hasContentByPixels,
-            fileSize: fileSize,
-            sub1HasContent: sub1HasContent,
-            sub1FileSize: sub1FileSize,
-            sub2HasContent: sub2HasContent,
-            sub2FileSize: sub2FileSize,
-            visionText: visionText,
-            visionRow: visionRow,
-            visionColumn: visionColumn,
-            visionConfidence: visionConfidence,
-            matchedByVision: matchedByVision,
-            cellHasVisionText: cellHasVisionText,
-            detectionMethod: detectionMethod,
-            boundingBox: {
-              x: fullCellBbox.originX,
-              y: fullCellBbox.originY,
-              width: fullCellBbox.width,
-              height: fullCellBbox.height,
-            },
-            croppedImageUri: croppedFullCell.uri,
-            croppedSub1Uri: croppedSub1.uri,
-            croppedSub2Uri: croppedSub2.uri,
-          });
-
-          console.log(`  Row ${rowNum}: ${hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${detectionMethod})`);
-        } catch (error: any) {
-          console.error(`  Error processing TURBOPROP cell ${rowNum}:`, error.message);
-          turbopropExtractions.push({
-            row: rowNum,
-            column: 'TURBOPROP',
-            hasContent: false,
-            error: error.message,
-          });
-        }
-
-        setProgress(75 + (i / 14) * 15);
-      }
-
-      console.log('========== FINAL TURBOPROP EXTRACTIONS ==========');
-      console.log(JSON.stringify(turbopropExtractions, null, 2));
-      console.log('================================================\n');
-      */
-      // End of commented out DATE, TURBOJET, TURBOPROP extraction
-
       // ========== EXTRACT DATE COLUMN ==========
-      console.log('[Process] Step 5: Extracting DATE column...');
+      console.log('[Process] Step 1: Extracting DATE column...');
       setStatus('Extracting DATE column...');
       setProgress(85);
 
@@ -2292,9 +1165,9 @@ export default function HybridFlightLogExtractor() {
       };
 
       // Create dummy data for other text columns (not yet implemented)
-      const aircraftMakeExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
-      const aircraftIdentExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
-      const fromToExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
+      // const aircraftMakeExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
+      // const aircraftIdentExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
+      // const fromToExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
       const selExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
       const sesExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
       const melExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
@@ -2302,34 +1175,44 @@ export default function HybridFlightLogExtractor() {
       const gliderExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
       
       // Create dummy result objects for commented out columns
-      const aircraftMakeResult = { extractions: aircraftMakeExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
-      const aircraftIdentResult = { extractions: aircraftIdentExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
-      const fromToResult = { extractions: fromToExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
+      // const aircraftMakeResult = { extractions: aircraftMakeExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
+      // const aircraftIdentResult = { extractions: aircraftIdentExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
+      // const fromToResult = { extractions: fromToExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
       const selResult = { extractions: selExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
       const sesResult = { extractions: sesExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
       const melResult = { extractions: melExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
       const heliResult = { extractions: heliExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
       const gliderResult = { extractions: gliderExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
 
-      // ========== EXTRACT TEXT COLUMNS (TEMPORARILY DISABLED) ==========
-      // Commenting out other text columns to focus on DATE, TOTAL DURATION, TURBOJET, TURBOPROP
-      /*
-      console.log('[Process] Step 5b: Extracting other text columns...');
+      // ========== EXTRACT TEXT COLUMNS ==========
+      console.log('[Process] Step 2: Extracting other text columns...');
       setStatus('Extracting text columns...');
 
       // Extract 3 text columns using helper function (similar to DATE)
       // All are non-shaded and should have values in all rows
-      const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 74, 101, 55, 34, leftImage, 1200);
-      const aircraftIdentResult = await extractTextColumn('AIRCRAFT IDENT', 131, 101, 55, 34, leftImage, 1200);
-      const fromToResult = await extractTextColumn('FROM-TO', 188, 101, 102, 34, leftImage, 1200);
+      // const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 74, 101, 55, 34, leftImage, 1200, contextRef.current, requestId);
+      // const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImage, 1200, contextRef.current, requestId);  //Pretty good
+      //const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImage, 1200, contextRef.current, requestId);
+      const aircraftMakeIdentResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImage, 1200, contextRef.current, requestId); // Use for make and ident
+      const fromToResult = await extractTextColumn('FROM-TO', 188, 101, 165, 34, leftImage, 1200, contextRef.current, requestId); // gets from-to and duration...but variable columns
 
-      const aircraftMakeExtractions = aircraftMakeResult.extractions;
-      const aircraftIdentExtractions = aircraftIdentResult.extractions;
+      // Split aircraftMakeIdentResult into make and ident
+      const aircraftMakeExtractions = aircraftMakeIdentResult.extractions.map((cell: any) => {
+        const parts = (cell.llmColumnValue || '').split(/\s+/);
+        return { ...cell, llmColumnValue: parts[1] || '' };
+      });
+      
+      const aircraftIdentExtractions = aircraftMakeIdentResult.extractions.map((cell: any) => {
+        const parts = (cell.llmColumnValue || '').split(/\s+/);
+        return { ...cell, llmColumnValue: parts[2] || '' };
+      });
+
+      const aircraftMakeResult = { ...aircraftMakeIdentResult, extractions: aircraftMakeExtractions };
+      const aircraftIdentResult = { ...aircraftMakeIdentResult, extractions: aircraftIdentExtractions };
       const fromToExtractions = fromToResult.extractions;
-      */
 
       // ========== EXTRACT TOTAL DURATION COLUMN ==========
-      console.log('[Process] Step 6: Extracting TOTAL DURATION column...');
+      console.log('[Process] Step 3: Extracting TOTAL DURATION column...');
       setStatus('Extracting TOTAL DURATION column...');
       setProgress(88);
 
@@ -2456,6 +1339,30 @@ export default function HybridFlightLogExtractor() {
         
         if (visionValue && llmColumnValue && visionValue !== llmColumnValue) {
           console.log(`    ⚠️  MISMATCH: Vision="${visionValue}" vs LLM Column="${llmColumnValue}"`);
+        }
+      });
+      console.log('==============================================\n');
+
+      // ========== DETAILED LOGGING FOR AIRCRAFT IDENT ==========
+      console.log('\n========== AIRCRAFT IDENT COLUMN DETAILS ==========');
+      console.log(`[Process] AIRCRAFT IDENT: ${aircraftIdentExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
+      console.log(`[LLM] Column-level extraction: ${aircraftIdentResult.llmColumnResult?.length || 0} values`);
+      if (aircraftIdentResult.llmColumnResult && aircraftIdentResult.llmColumnResult.length > 0) {
+        console.log(`[LLM] Column values: ${JSON.stringify(aircraftIdentResult.llmColumnResult)}`);
+      }
+      console.log('\n--- Per-Row Comparison ---');
+      aircraftIdentExtractions.forEach((cell: any) => {
+        console.log(`  Row ${cell.row}: ${cell.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'}`);
+        console.log(`    Vision: "${cell.text || ''}"`);
+        console.log(`    LLM Column: "${cell.llmColumnValue || ''}"`);
+        console.log(`    LLM Per-Cell: "${cell.llmPerCellValue || ''}"`);
+        console.log(`    Detection: ${cell.detectionMethod}`);
+        
+        const visionValue = cell.text || '';
+        const llmValue = cell.llmPerCellValue || cell.llmColumnValue || '';
+        
+        if (visionValue && llmValue && visionValue !== llmValue) {
+          console.log(`    ⚠️  MISMATCH: Vision="${visionValue}" vs LLM="${llmValue}"`);
         }
       });
       console.log('==============================================\n');
@@ -2656,6 +1563,10 @@ export default function HybridFlightLogExtractor() {
             // Helper function to get FINAL value (LLM column result if available, otherwise Vision/text)
             const getFinalValue = (cell: any) => {
               if (!cell.hasContent) return '';
+              // For columns with per-cell LLM, prefer per-cell over column
+              if (cell.llmPerCellValue !== undefined && cell.llmPerCellValue !== null) {
+                return cell.llmPerCellValue;
+              }
               // For duration columns, prefer LLM column result
               if (cell.llmColumnValue !== undefined && cell.llmColumnValue !== null) {
                 return cell.llmColumnValue;
@@ -2683,424 +1594,6 @@ export default function HybridFlightLogExtractor() {
 
       // Return immediately - we have what we need
       return;
-
-      // ========== OLD CODE BELOW (SKIPPED) ==========
-
-      // ========== SKIP LLM - RETURN OCR RESULTS ONLY ==========
-      console.log('[Process] Skipping LLM extraction, returning OCR results...');
-      setStatus('OCR Complete - Preparing results...');
-      setProgress(95);
-
-      // Format OCR data as "extracted flights" for display
-      const ocrFlights: any[] = [];
-      for (let row = 1; row < ocrResult.leftTable.rowCount; row++) {
-        const leftCells = ocrResult.cellData.left
-          .filter((c: any) => c.row === row)
-          .sort((a: any, b: any) => a.column - b.column);
-        
-        const rightCells = ocrResult.cellData.right
-          .filter((c: any) => c.row === row)
-          .sort((a: any, b: any) => a.column - b.column);
-
-        ocrFlights.push({
-          row: row,
-          leftCells: leftCells.map((c: any) => c.value || ''),
-          rightCells: rightCells.map((c: any) => c.value || ''),
-        });
-      }
-
-      // Create CSV from OCR data
-      const ocrCsv = 'Row,Left Cells,Right Cells\n' + 
-        ocrFlights.map(f => 
-          `${f.row},"${f.leftCells.join(' | ')}","${f.rightCells.join(' | ')}"`
-        ).join('\n');
-
-      console.log('========== OCR FLIGHTS ==========');
-      console.log(JSON.stringify(ocrFlights, null, 2));
-      console.log('=================================\n');
-
-      setResult2({
-        ocrData: ocrResult,
-        extractedFlights: ocrFlights,
-        rawLLMOutput: 'LLM extraction skipped - OCR results only',
-        csv: ocrCsv,
-      });
-
-      setProgress(100);
-      setStatus(`Complete! OCR extracted ${ocrFlights.length} rows`);
-      console.log('[Process] OCR extraction complete!');
-      
-      // Skip all LLM processing below
-      return;
-
-      // ========== LLM CODE BELOW (SKIPPED) ==========
-
-      // Step 2: Format OCR data for LLM
-      console.log('[Process] Step 2: Formatting OCR data for LLM...');
-      setStatus('Preparing data for LLM...');
-      setProgress(30);
-
-      const ocrSummary = formatOCRForLLM(ocrResult);
-      console.log('========== FORMATTED OCR FOR LLM ==========');
-      console.log(ocrSummary);
-      console.log('===========================================\n');
-      console.log(`[Process] OCR summary length: ${ocrSummary.length} chars`);
-
-      // ========== FIRST LLM CALL - COMMENTED OUT FOR NOW ==========
-      /*
-      // Step 3: Run LLM extraction
-      console.log('[Process] Step 3: Starting LLM extraction...');
-      setStatus('Extracting with Qwen3-VL (this may take 1-2 min)...');
-      setProgress(50);
-
-      const prompt = `${SYSTEM_PROMPT}
-
-OCR BOUNDING BOX DATA (showing table structure and cell positions):
-${ocrSummary}
-
-CRITICAL INSTRUCTIONS:
-1. Extract data from ALL ${ocrResult.leftTable.rowCount - 1} flight rows (excluding header row)
-2. Process EVERY row from row 1 to row ${ocrResult.leftTable.rowCount - 1}
-3. Do NOT skip rows - even if a row appears empty, include it with empty/null values
-4. Use the bounding box data to understand row and column positions
-5. For each row, extract data from BOTH left and right pages
-6. Match rows by their physical position (row number)
-7. Handle empty cells correctly using spatial information
-8. Apply OCR error corrections as specified above
-9. Validate that time columns sum correctly
-10. Skip ONLY the summary rows at bottom (TOTALS THIS PAGE, AMT. FORWARDED, TOTALS TO DATE)
-
-IMPORTANT: For each field you extract, provide:
-- value: The extracted value
-- confidence: Your confidence level (0.0-1.0)
-- reasoning: Brief explanation of why you chose this value (e.g., "OCR read '2|8' in column 4, converted to 2.8", "Empty cell at row 3 col 5", "Corrected LB25 to LR25 per rules")
-
-EXPECTED OUTPUT: A JSON array with ${ocrResult.leftTable.rowCount - 1} objects (one per flight row).
-
-Return ONLY a JSON array with one object per flight entry. Each object should have this structure:
-{
-  "date": {"value": "MM-DD-YYYY", "confidence": 0.95, "reasoning": "OCR read clearly"},
-  "aircraft": {"value": "LR25", "confidence": 0.9, "reasoning": "Corrected from LB25"},
-  "ident": {"value": "N123AB", "confidence": 1.0, "reasoning": "Clear OCR"},
-  "route": {"value": "HOU-DFW", "confidence": 0.85, "reasoning": "Combined FROM-TO"},
-  "totalDuration": {"value": 2.8, "confidence": 0.95, "reasoning": "OCR '2|8' = 2.8"},
-  "sel": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
-  "ses": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
-  "mel": {"value": 2.8, "confidence": 0.95, "reasoning": "Matches total, multi-engine aircraft"},
-  "turbojet": {"value": 2.8, "confidence": 0.9, "reasoning": "LR25 is jet, matches total"},
-  "turboprop": {"value": 0.0, "confidence": 1.0, "reasoning": "LR25 is jet not turboprop"},
-  "heli": {"value": 0.0, "confidence": 1.0, "reasoning": "Not helicopter"},
-  "glider": {"value": 0.0, "confidence": 1.0, "reasoning": "Not glider"},
-  "landingsDay": {"value": 2, "confidence": 0.9, "reasoning": "Left side of LNDGS cell"},
-  "landingsNight": {"value": 1, "confidence": 0.9, "reasoning": "Right side of LNDGS cell"},
-  "night": {"value": 1.4, "confidence": 0.95, "reasoning": "OCR '1|4' = 1.4"},
-  "actualInstrument": {"value": 0.2, "confidence": 0.85, "reasoning": "OCR '|2' = 0.2 (tenths only)"},
-  "simulatedInstrument": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
-  "appNo": {"value": 1, "confidence": 0.9, "reasoning": "Single digit in narrow column"},
-  "appType": {"value": "ILS", "confidence": 0.95, "reasoning": "Text code in APP TYPE column"},
-  "flightSim": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
-  "crossCountry": {"value": 2.8, "confidence": 0.95, "reasoning": "Matches total for XC flight"},
-  "solo": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
-  "pic": {"value": 2.8, "confidence": 0.95, "reasoning": "Matches total, pilot in command"},
-  "sic": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
-  "dual": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
-  "cfi": {"value": 0.0, "confidence": 1.0, "reasoning": "Empty cell"},
-  "remarks": {"value": "91-135", "confidence": 0.9, "reasoning": "FAR reference in remarks column"}
-}
-
-REMINDER: Extract ALL ${ocrResult.leftTable.rowCount - 1} flight rows. Do not stop after the first row!
-
-Return ONLY the JSON array, no explanations or markdown code fences.`;
-
-      console.log('========== FULL PROMPT TO LLM ==========');
-      console.log(prompt);
-      console.log('========================================\n');
-
-      console.log(`[Process] Prompt length: ${prompt.length} chars`);
-      console.log('[Process] Starting LLM completion...');
-
-      let tokenCount = 0;
-      let lastLogTime = Date.now();
-      const llmStartTime = Date.now();
-
-      const completion = await contextRef.current!.completion(
-        {
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: prompt },
-                { type: 'image_url', image_url: { url: leftImage } },
-                { type: 'image_url', image_url: { url: rightImage } },
-              ],
-            },
-          ],
-          n_predict: 8000,
-          temperature: 0.1,
-          stop: ['</s>', '\n\n\n'],
-        },
-        (data) => {
-          // Progress callback - called for each token generated
-          if (data.token) {
-            tokenCount++;
-            const progressPercent = 50 + Math.min((tokenCount / 8000) * 45, 45);
-            setProgress(progressPercent);
-
-            // Log every 50 tokens or every 5 seconds
-            const now = Date.now();
-            if (tokenCount % 50 === 0 || now - lastLogTime > 5000) {
-              const elapsed = ((now - llmStartTime) / 1000).toFixed(1);
-              const tokensPerSec = (
-                (tokenCount / (now - llmStartTime)) *
-                1000
-              ).toFixed(1);
-              console.log(
-                `[Process] LLM progress: ${tokenCount} tokens in ${elapsed}s (${tokensPerSec} tok/s)`
-              );
-              setStatus(
-                `Generating... ${tokenCount} tokens (${tokensPerSec} tok/s)`
-              );
-              lastLogTime = now;
-            }
-          }
-        }
-      );
-
-      const llmDuration = ((Date.now() - llmStartTime) / 1000).toFixed(1);
-      const avgTokensPerSec = (
-        (tokenCount / (Date.now() - llmStartTime)) *
-        1000
-      ).toFixed(1);
-      console.log(
-        `[Process] LLM complete in ${llmDuration}s: ${tokenCount} tokens (${avgTokensPerSec} tok/s avg)`
-      );
-
-      console.log('========== RAW LLM OUTPUT ==========');
-      console.log(completion.text);
-      console.log('====================================\n');
-      console.log(`[Process] Output length: ${completion.text.length} chars`);
-
-      setProgress(95);
-      setStatus('Parsing results...');
-      console.log('[Process] Step 4: Parsing LLM output...');
-
-      // Parse LLM output
-      const extracted = parseModelOutput(completion.text);
-
-      console.log('========== EXTRACTED FLIGHT ENTRIES ==========');
-      console.log(JSON.stringify(extracted, null, 2));
-      console.log('==============================================\n');
-      console.log(`[Process] Extracted ${extracted.length} flight entries`);
-
-      // Parse and log CSV
-      const csv1 = parseAndLogCSV(extracted, 'PROMPT 1');
-
-      setResult({
-        ocrData: ocrResult,
-        extractedFlights: extracted,
-        rawLLMOutput: completion.text,
-        csv: csv1,
-      });
-
-      setProgress(50);
-      setStatus(`First extraction complete! Now trying alternative prompt...`);
-      console.log(
-        '[Process] First extraction complete! Starting second extraction with alternative prompt...'
-      );
-      */
-
-      // ========== MULTI-PASS COLUMN EXTRACTION ==========
-      
-      console.log('[Process] Step 3: Using column-batched extraction...');
-      setStatus('Extracting columns in batches...');
-      setProgress(50);
-
-      const allFlights: any[] = [];
-      const batchOutputs: string[] = [];
-      
-      // Define column batches - extract 4-5 columns at a time
-      const columnBatches = [
-        {
-          name: 'First 3 Columns (DATE, AIRCRAFT, IDENT)',
-          prompt: `Extract ONLY these first 3 columns from the flight log (left page):
-1. DATE (M/D format - CRITICAL: Read the month digit carefully. 9/10 means September 10, NOT August)
-2. AIRCRAFT MAKE AND MODEL (e.g., LR25, BE-200, IA1124)
-3. AIRCRAFT IDENT (N-number)
-
-FOCUS ONLY ON THESE 3 COLUMNS. Ignore all other columns.
-
-Return JSON array with one object per row. Use empty string for blank cells.
-Format: [{"date": "9/10", "aircraft": "LR25", "ident": "N308AJ"}, ...]
-
-CRITICAL: For DATE column, read each date independently. Do NOT create patterns or sequences. If you see 9/10, that is September 10 (month 9, day 10).`
-        },
-        {
-          name: 'Route and Duration',
-          prompt: `Extract these columns from the flight log (left page):
-1. FROM-TO (airport codes with hyphens)
-2. TOTAL DURATION (hours.tenths, e.g., 2|8 = 2.8)
-
-Return JSON array with one object per row. Use empty string for blank cells.
-Format: [{"route": "HOU-GLS", "total": "2.8"}, ...]`
-        },
-        {
-          name: 'Aircraft Categories',
-          prompt: `Extract these columns from the flight log (left page):
-1. SINGLE-ENGINE LAND (hours.tenths or empty)
-2. MULTI-ENGINE LAND (hours.tenths or empty)
-3. TURBOJET (hours.tenths or empty - only for LR25, IA1124)
-4. TURBOPROP (hours.tenths or empty - only for BE-200)
-5. LANDINGS DAY (integer or empty)
-6. LANDINGS NIGHT (integer or empty)
-
-Return JSON array with one object per row. Use empty string for blank cells.
-Format: [{"sel": "", "mel": "2.8", "turbojet": "2.8", "turboprop": "", "day_ldg": "4", "night_ldg": "1"}, ...]`
-        },
-        {
-          name: 'Flight Conditions',
-          prompt: `Extract these columns from the flight log (right page):
-1. NIGHT (hours.tenths or empty)
-2. ACTUAL INSTRUMENT (hours.tenths or empty - often 0.1, 0.2, 0.3)
-3. SIMULATED INSTRUMENT (hours.tenths or empty)
-4. APPROACHES (integer or empty)
-5. APPROACH TYPE (text like ILS, VOR or empty)
-
-Return JSON array with one object per row. Use empty string for blank cells.
-Format: [{"night": "1.4", "inst": "0.2", "sim_inst": "", "approaches": "1", "app_type": "ILS"}, ...]`
-        },
-        {
-          name: 'Pilot Time',
-          prompt: `Extract these columns from the flight log (right page):
-1. CROSS COUNTRY (hours.tenths or empty)
-2. PILOT IN COMMAND (hours.tenths or empty)
-3. SECOND IN COMMAND (hours.tenths or empty)
-4. DUAL RECEIVED (hours.tenths or empty)
-5. AS FLIGHT INSTRUCTOR (hours.tenths or empty)
-6. REMARKS (text or empty)
-
-Return JSON array with one object per row. Use empty string for blank cells.
-Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks": "91-135"}, ...]`
-        }
-      ];
-
-      const startTime = Date.now();
-      
-      for (let i = 0; i < columnBatches.length; i++) {
-        const batch = columnBatches[i];
-        const baseProgress = 50 + (i / columnBatches.length) * 45;
-        
-        setStatus(`Extracting ${batch.name} (${i + 1}/${columnBatches.length})...`);
-        setProgress(baseProgress);
-        
-        console.log(`[Process] Batch ${i + 1}/${columnBatches.length}: ${batch.name}`);
-        
-        // Special logging for first 3 columns batch
-        if (i === 0) {
-          console.log(`[Process] ========== FIRST 3 COLUMNS BATCH ==========`);
-          console.log(`[Process] This batch focuses ONLY on DATE, AIRCRAFT MAKE, and AIRCRAFT IDENT`);
-          console.log(`[Process] Prompt: ${batch.prompt}`);
-          console.log(`[Process] ================================================`);
-        }
-        
-        let tokenCount = 0;
-        let lastLogTime = Date.now();
-        const batchStartTime = Date.now();
-
-        const completion = await contextRef.current!.completion(
-          {
-            messages: [
-              {
-                role: 'user',
-                content: [
-                  { type: 'text', text: batch.prompt },
-                  { type: 'image_url', image_url: { url: leftImage! } },
-                  { type: 'image_url', image_url: { url: rightImage! } },
-                ],
-              },
-            ],
-            n_predict: 2000,
-            temperature: 0.1,
-            stop: ['</s>', '\n\n\n'],
-          },
-          (data) => {
-            if (data.token) {
-              tokenCount++;
-              const progressPercent = baseProgress + Math.min((tokenCount / 2000) * (45 / columnBatches.length), (45 / columnBatches.length));
-              setProgress(progressPercent);
-
-              const now = Date.now();
-              if (tokenCount % 50 === 0 || now - lastLogTime > 5000) {
-                const elapsed = ((now - batchStartTime) / 1000).toFixed(1);
-                const tokensPerSec = ((tokenCount / (now - batchStartTime)) * 1000).toFixed(1);
-                console.log(`[Process] Batch ${i + 1} progress: ${tokenCount} tokens in ${elapsed}s (${tokensPerSec} tok/s)`);
-                lastLogTime = now;
-              }
-            }
-          }
-        );
-
-        const batchDuration = ((Date.now() - batchStartTime) / 1000).toFixed(1);
-        console.log(`[Process] Batch ${i + 1} complete in ${batchDuration}s: ${tokenCount} tokens`);
-        console.log(`[Process] Batch ${i + 1} output:\n${completion.text}`);
-        
-        batchOutputs.push(`BATCH ${i + 1} (${batch.name}):\n${completion.text}`);
-        
-        // Parse this batch
-        const batchData = parseModelOutput(completion.text);
-        console.log(`[Process] Batch ${i + 1} parsed ${batchData.length} rows`);
-        
-        // Special logging for first 3 columns batch
-        if (i === 0) {
-          console.log(`[Process] ========== FIRST 3 COLUMNS RESULTS ==========`);
-          console.log(`[Process] LLM extracted ${batchData.length} rows`);
-          console.log(`[Process] Here's what the LLM saw in the first 3 columns:`);
-          batchData.forEach((row: any, idx: number) => {
-            console.log(`[Process]   Row ${idx + 1}: DATE="${row.date}" AIRCRAFT="${row.aircraft}" IDENT="${row.ident}"`);
-          });
-          console.log(`[Process] ===================================================`);
-        }
-        
-        // Merge with existing data
-        if (i === 0) {
-          // First batch - initialize array
-          allFlights.push(...batchData);
-        } else {
-          // Subsequent batches - merge columns
-          for (let j = 0; j < Math.min(allFlights.length, batchData.length); j++) {
-            allFlights[j] = { ...allFlights[j], ...batchData[j] };
-          }
-        }
-      }
-
-      const totalDuration = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(`[Process] All batches complete in ${totalDuration}s: ${allFlights.length} flights`);
-
-      setProgress(95);
-      setStatus('Combining results...');
-
-      console.log('========== COMBINED FLIGHT ENTRIES ==========');
-      console.log(JSON.stringify(allFlights, null, 2));
-      console.log('=============================================\n');
-
-      // Parse and log CSV from LLM output
-      const csv2 = parseAndLogCSV(allFlights, 'COLUMN-BATCHED EXTRACTION');
-
-      // Generate CSV from extracted column data with defaults
-      const extractedCSV = convertExtractedDataToCSV(ocrResult);
-      console.log('========== EXTRACTED DATA CSV ==========');
-      console.log(extractedCSV);
-      console.log('========================================\n');
-
-      setResult2({
-        ocrData: ocrResult,
-        extractedFlights: allFlights,
-        rawLLMOutput: batchOutputs.join('\n\n'),
-        csv: extractedCSV, // Use extracted data CSV instead of LLM CSV
-      });
-
-      setProgress(100);
-      setStatus(`Complete! Extracted ${allFlights.length} flights`);
-      console.log('[Process] Extraction complete!');
     } catch (error: any) {
       console.error('[Process] ERROR:', error);
       Alert.alert('Error', error.message);
@@ -3110,49 +1603,6 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
       processingRef.current = false;
       setBackgroundWarning(false);
     }
-  };
-
-  const formatOCRForLLM = (ocrResult: any): string => {
-    const leftHeaders = ocrResult.leftTable.columns
-      .map(
-        (col: any, idx: number) =>
-          `Col${idx}: ${col.cells[0]?.value || 'UNKNOWN'}`
-      )
-      .join(', ');
-
-    const rightHeaders = ocrResult.rightTable.columns
-      .map(
-        (col: any, idx: number) =>
-          `Col${idx}: ${col.cells[0]?.value || 'UNKNOWN'}`
-      )
-      .join(', ');
-
-    let summary = `LEFT PAGE STRUCTURE:\n`;
-    summary += `Columns (${ocrResult.leftTable.columnCount}): ${leftHeaders}\n`;
-    summary += `Rows: ${ocrResult.leftTable.rowCount}\n\n`;
-
-    summary += `RIGHT PAGE STRUCTURE:\n`;
-    summary += `Columns (${ocrResult.rightTable.columnCount}): ${rightHeaders}\n`;
-    summary += `Rows: ${ocrResult.rightTable.rowCount}\n\n`;
-
-    summary += `CELL GRID (first 20 rows):\n`;
-    for (let row = 1; row < Math.min(21, ocrResult.leftTable.rowCount); row++) {
-      const leftCells = ocrResult.cellData.left
-        .filter((c: any) => c.row === row)
-        .sort((a: any, b: any) => a.column - b.column)
-        .map((c: any) => c.value || '""')
-        .join(' | ');
-
-      const rightCells = ocrResult.cellData.right
-        .filter((c: any) => c.row === row)
-        .sort((a: any, b: any) => a.column - b.column)
-        .map((c: any) => c.value || '""')
-        .join(' | ');
-
-      summary += `Row ${row}: ${leftCells} || ${rightCells}\n`;
-    }
-
-    return summary;
   };
 
   const parseModelOutput = (text: string): any[] => {
