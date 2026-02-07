@@ -137,7 +137,9 @@ async function extractTextColumn(
   width: number,
   height: number,
   leftImage: string,
-  pixelThreshold: number = 1200
+  pixelThreshold: number = 1200,
+  llamaContext?: LlamaContext | null,
+  requestId?: string
 ) {
   const ROW_SPACING = 36.25;
   const CROP_Y = 96;
@@ -171,6 +173,117 @@ async function extractTextColumn(
   });
 
   console.log(`  Vision detected: ${columnOCR.tables?.length || 0} tables`);
+
+  // ========== LLM OCR ON FULL COLUMN ==========
+  let llmColumnResult: string[] = [];
+  if (llamaContext) {
+    console.log(`  Running LLM OCR on full column...`);
+    try {
+      // Create column-specific prompt
+      let llmColumnPrompt = '';
+
+      if (columnName === 'DATE') {
+        llmColumnPrompt = `[Request: ${requestId || 'default'}] Read the handwritten text in this column image. Each cell contains text with numbers and a slash character (like "8/10" or "9/17").
+
+Read EXACTLY what is written in each of the 14 cells from top to bottom. These are just text strings - do not interpret them as dates or create any patterns.
+
+IMPORTANT:
+- Ignore any arrows, lines, or annotations between cells
+- If handwriting is unclear, make your best guess (e.g., if it looks like "8/36", it's probably "8/30")
+- Read all 14 cells even if some are difficult
+
+Return a JSON array with EXACTLY 14 text strings: ["8/10", "8/11", ...]
+
+If a cell is empty, use "".`;
+      } else {
+        llmColumnPrompt = `[Request: ${requestId || 'default'}] Extract all 14 text values from this ${columnName} column image. Return ONLY a JSON array of 14 strings, one per row, in order from top to bottom. If a cell is empty, use empty string "". Do not include any other text.`;
+      }
+
+      console.log(`  LLM Column Prompt (first 200 chars): ${llmColumnPrompt.substring(0, 200)}...`);
+
+      console.log(`  LLM Column: Calling completion API for ${columnName}...`);
+      const llmColumnResponse = await llamaContext.completion(
+        {
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'image_url', image_url: { url: croppedColumn.uri } },
+                { type: 'text', text: llmColumnPrompt },
+              ],
+            },
+          ],
+          n_predict: 500,
+          temperature: 0.1,
+          stop: [']', '\n\n', '```'],
+        },
+        (_data) => {
+          // Progress callback
+        }
+      );
+
+      console.log(`  LLM Column: Response received`);
+      
+      let llmColumnText = llmColumnResponse.text || '';
+      console.log(`  LLM Column Response Text (first 500 chars): ${llmColumnText.substring(0, 500)}`);
+      
+      // Strip markdown code blocks if present
+      llmColumnText = llmColumnText.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+      
+      // Fix double brackets if present
+      llmColumnText = llmColumnText.replace(/^\[\[/, '[').replace(/\]\]$/, ']');
+      
+      // Fix double commas (malformed JSON)
+      llmColumnText = llmColumnText.replace(/,\s*,/g, ',');
+      
+      // Try to parse JSON array from response
+      try {
+        // First, try to find a valid JSON array
+        let jsonMatch = llmColumnText.match(/\[[^\]]*\]/);
+        
+        // If no match or it looks incomplete, try to reconstruct
+        if (!jsonMatch || jsonMatch[0].length < 10) {
+          console.log(`  LLM Column: No complete JSON array found, trying to extract partial...`);
+          
+          const arrayStart = llmColumnText.indexOf('[');
+          if (arrayStart >= 0) {
+            let partialJson = llmColumnText.substring(arrayStart);
+            
+            // Remove any trailing incomplete content after last complete element
+            // Find all complete string elements: "text"
+            const completeElements: string[] = [];
+            const elementRegex = /"([^"]*)"/g;
+            let match;
+            
+            while ((match = elementRegex.exec(partialJson)) !== null) {
+              completeElements.push(`"${match[1]}"`);
+            }
+            
+            if (completeElements.length > 0) {
+              partialJson = '[' + completeElements.join(', ') + ']';
+              console.log(`  LLM Column: Reconstructed JSON with ${completeElements.length} elements`);
+              jsonMatch = [partialJson];
+            }
+          }
+        }
+        
+        if (jsonMatch) {
+          const jsonStr = jsonMatch[0];
+          llmColumnResult = JSON.parse(jsonStr);
+          console.log(`  LLM Column Parsed: ${llmColumnResult.length} values`);
+          console.log(`  LLM Column Values: ${JSON.stringify(llmColumnResult)}`);
+        } else {
+          console.log(`  LLM Column: No JSON array found in response`);
+        }
+      } catch (parseError: any) {
+        console.log(`  LLM Column Parse Error: ${parseError.message}`);
+      }
+    } catch (error: any) {
+      console.log(`  LLM Column Error: ${error?.message || 'Unknown error'}`);
+    }
+  } else {
+    console.log(`  LLM OCR skipped: No LLM context available`);
+  }
 
   const extractions: any[] = [];
 
@@ -241,10 +354,15 @@ async function extractTextColumn(
       
       const detectionMethod = matchedByVision ? 'Vision' : (pixelFallback ? 'Pixels' : 'None');
 
+      // Get LLM column result for this row
+      const llmColumnValue = llmColumnResult[i] || '';
+
       extractions.push({
         row: rowNum,
         column: columnName,
         text: visionText,
+        visionText: visionText,
+        llmColumnValue: llmColumnValue,
         hasContent: hasContent,
         fileSize: fileSize,
         confidence: visionConfidence,
@@ -268,6 +386,166 @@ async function extractTextColumn(
 
   console.log(`  ${columnName}: ${extractions.filter((c: any) => c.hasContent).length}/14 cells with content`);
 
+  // ========== HYBRID CORRECTION: Map LLM's compacted values to correct positions ==========
+  if (llmColumnResult.length > 0) {
+    console.log(`  [Hybrid] Mapping LLM compacted values to correct positions...`);
+    console.log(`  [Hybrid] LLM returned ${llmColumnResult.length} values (compacted, no empties)`);
+    console.log(`  [Hybrid] LLM values: ${JSON.stringify(llmColumnResult)}`);
+    
+    const correctedLlmResult: string[] = [];
+    let llmValueIndex = 0;
+    
+    for (let i = 0; i < 14; i++) {
+      const cell = extractions[i];
+      
+      if (!cell.hasContent) {
+        correctedLlmResult.push('');
+      } else {
+        if (llmValueIndex < llmColumnResult.length) {
+          const llmValue = llmColumnResult[llmValueIndex] || '';
+          correctedLlmResult.push(llmValue);
+          llmValueIndex++;
+        } else {
+          console.log(`  [Hybrid] Warning: Row ${i + 1} has content but no LLM value available`);
+          correctedLlmResult.push('');
+        }
+      }
+    }
+    
+    console.log(`  [Hybrid] Corrected LLM: ${JSON.stringify(correctedLlmResult)}`);
+    console.log(`  [Hybrid] Pixel detection: ${extractions.map((c: any) => c.hasContent ? '✓' : '✗').join(' ')}`);
+    console.log(`  [Hybrid] Used ${llmValueIndex} of ${llmColumnResult.length} LLM values`);
+    
+    // Update extractions with corrected LLM values
+    extractions.forEach((cell: any, idx: number) => {
+      cell.llmColumnValue = correctedLlmResult[idx] || '';
+    });
+    
+    llmColumnResult = correctedLlmResult;
+  } else {
+    console.log(`  [Hybrid] No LLM values returned, skipping correction`);
+  }
+
+  // ========== PER-CELL LLM VERIFICATION (DATE COLUMN ONLY) ==========
+  if (columnName === 'DATE' && llamaContext) {
+    console.log(`  [Per-Cell] Starting per-cell LLM verification for DATE column...`);
+    
+    // Identify cells that need verification (have content but LLM value looks suspicious)
+    const cellsToVerify: number[] = [];
+    for (let i = 0; i < 14; i++) {
+      const cell = extractions[i];
+      if (cell.hasContent && cell.llmColumnValue) {
+        // Check if this looks like part of a sequential pattern
+        // or if it's missing when we expect 14 values
+        cellsToVerify.push(i);
+      }
+    }
+    
+    console.log(`  [Per-Cell] Verifying ${cellsToVerify.length} cells with per-cell LLM...`);
+    
+    // Run per-cell LLM on suspicious cells
+    for (const idx of cellsToVerify) {
+      const cell = extractions[idx];
+      try {
+        const perCellPrompt = `Read this handwritten date. Format is month/day (M/D or M/DD).
+
+The FIRST number before the "/" is the MONTH.
+The SECOND number after the "/" is the DAY.
+
+Look carefully at the first digit - is it 8 (two circles stacked) or 9 (circle with tail)?
+
+Answer with just the date in M/D format:`;
+
+        console.log(`  [Per-Cell] Row ${cell.row}: Calling LLM...` + perCellPrompt);
+        const perCellResponse = await llamaContext.completion(
+          {
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'image_url', image_url: { url: cell.croppedImageUri } },
+                  { type: 'text', text: perCellPrompt },
+                ],
+              },
+            ],
+            n_predict: 15,
+            temperature: 0.1,
+            stop: ['\n', '```'],
+          },
+          (_data) => {}
+        );
+
+        let perCellText = (perCellResponse.text || '').trim();
+        // Clean up response
+        perCellText = perCellText.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+        perCellText = perCellText.replace(/["\[\]]/g, ''); // Remove quotes and brackets
+        
+        console.log(`  [Per-Cell] Row ${cell.row}: Column="${cell.llmColumnValue}" -> PerCell="${perCellText}"`);
+        
+        // Update with per-cell result
+        cell.llmPerCellValue = perCellText;
+        cell.llmColumnValue = perCellText; // Use per-cell as the final value
+        llmColumnResult[idx] = perCellText;
+      } catch (error: any) {
+        console.log(`  [Per-Cell] Row ${cell.row}: Error - ${error.message}`);
+      }
+    }
+    
+    console.log(`  [Per-Cell] Completed ${cellsToVerify.length} per-cell verifications`);
+    console.log(`  [Per-Cell] Final values before post-processing: ${JSON.stringify(llmColumnResult)}`);
+    
+    // ========== POST-PROCESSING: Detect month rollovers ==========
+    console.log(`  [Post-Process] Detecting month rollovers...`);
+    let correctionsCount = 0;
+    let currentMonth = null; // Track the current month as we go
+    
+    for (let i = 0; i < 14; i++) {
+      const currDate = llmColumnResult[i];
+      
+      if (currDate) {
+        const currMatch = currDate.match(/^(\d+)\/(\d+)$/);
+        
+        if (currMatch) {
+          let currMonth = parseInt(currMatch[1]);
+          const currDay = parseInt(currMatch[2]);
+          
+          // First date - establish baseline
+          if (i === 0) {
+            currentMonth = currMonth;
+          } else {
+            const prevDate = llmColumnResult[i - 1];
+            const prevMatch = prevDate.match(/^(\d+)\/(\d+)$/);
+            
+            if (prevMatch) {
+              const prevDay = parseInt(prevMatch[2]);
+              
+              // If day drops by more than 15 (e.g., 25 → 5), month rolled over
+              if (currDay < prevDay && (prevDay - currDay) > 15) {
+                currentMonth = currentMonth + 1;
+                const correctedDate = `${currentMonth}/${currDay}`;
+                console.log(`  [Post-Process] Row ${i + 1}: Detected rollover (day ${prevDay} → ${currDay}), correcting ${currDate} to ${correctedDate}`);
+                llmColumnResult[i] = correctedDate;
+                extractions[i].llmColumnValue = correctedDate;
+                correctionsCount++;
+              }
+              // If model read wrong month but we know we're in a later month
+              else if (currMonth < currentMonth) {
+                const correctedDate = `${currentMonth}/${currDay}`;
+                console.log(`  [Post-Process] Row ${i + 1}: Month should be ${currentMonth}, correcting ${currDate} to ${correctedDate}`);
+                llmColumnResult[i] = correctedDate;
+                extractions[i].llmColumnValue = correctedDate;
+                correctionsCount++;
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    console.log(`  [Post-Process] Completed. Made ${correctionsCount} corrections.`);
+    console.log(`  [Per-Cell] Final values after post-processing: ${JSON.stringify(llmColumnResult)}`);
+  }
+
   return {
     extractions,
     croppedColumnUri: croppedColumn.uri,
@@ -278,6 +556,7 @@ async function extractTextColumn(
       columnCount: columnOCR.tables?.[0]?.columnCount || 0,
       rawText: columnOCR.rawText,
     },
+    llmColumnResult: llmColumnResult,
   };
 }
 
@@ -289,7 +568,9 @@ async function extractFlightDurationColumn(
   width: number,
   height: number,
   leftImage: string,
-  pixelThreshold: number = 5800
+  pixelThreshold: number = 5800,
+  llamaContext?: LlamaContext | null,
+  requestId?: string
 ) {
   const ROW_SPACING = 36.25;
   const CROP_Y = 96;
@@ -330,6 +611,61 @@ async function extractFlightDurationColumn(
 
   console.log(`  Vision detected: ${columnOCR.tables?.length || 0} tables`);
 
+  // ========== LLM OCR ON FULL COLUMN ==========
+  let llmColumnResult: string[] = [];
+  if (llamaContext) {
+    console.log(`  Running LLM OCR on full column...`);
+    try {
+      // Simple prompt without examples to avoid context contamination
+      const llmColumnPrompt = `[Request: ${requestId || 'default'}] Extract all 14 flight duration values from this column image. Each cell has two sub-columns: hours (left) and tenths (right). Format each as "hours.tenths" (e.g., "2.8", "4.2", "0.6"). If a cell is empty, use empty string "". Return ONLY a JSON array of 14 strings, one per row, in order from top to bottom.`;
+      
+      console.log(`  LLM Column: Calling completion API for ${columnName}...`);
+      const llmColumnResponse = await llamaContext.completion(
+        {
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'image_url', image_url: { url: croppedColumn.uri } },
+                { type: 'text', text: llmColumnPrompt },
+              ],
+            },
+          ],
+          n_predict: 200,
+          temperature: 0.1,
+        },
+        (_data) => {
+          // Progress callback
+        }
+      );
+
+      console.log(`  LLM Column: Response received`);
+      console.log(`  LLM Column: Response object:`, JSON.stringify(llmColumnResponse, null, 2));
+      
+      const llmColumnText = llmColumnResponse.text || '';
+      console.log(`  LLM Column Response Text: ${llmColumnText}`);
+      
+      // Try to parse JSON array from response
+      try {
+        const jsonMatch = llmColumnText.match(/\[.*\]/s);
+        if (jsonMatch) {
+          llmColumnResult = JSON.parse(jsonMatch[0]);
+          console.log(`  LLM Column Parsed: ${llmColumnResult.length} values`);
+        } else {
+          console.log(`  LLM Column: No JSON array found in response`);
+        }
+      } catch (parseError: any) {
+        console.log(`  LLM Column Parse Error: ${parseError.message}`);
+      }
+    } catch (error: any) {
+      console.log(`  LLM Column Error: ${error?.message || 'Unknown error'}`);
+      console.log(`  LLM Column Error Stack:`, error?.stack);
+      console.log(`  LLM Column Error Object:`, JSON.stringify(error, null, 2));
+    }
+  } else {
+    console.log(`  LLM OCR skipped: No LLM context available`);
+  }
+
   const extractions: any[] = [];
 
   // Extract each of the 14 rows
@@ -363,7 +699,7 @@ async function extractFlightDurationColumn(
         // Ignore
       }
 
-      // Crop sub-columns
+      // Crop sub-columns INDIVIDUALLY
       const croppedSub1 = await ImageManipulator.manipulateAsync(
         leftImage,
         [{ crop: { originX: sub1X, originY: cellY, width: sub1Width, height: height } }],
@@ -376,72 +712,101 @@ async function extractFlightDurationColumn(
         { compress: 1, format: ImageManipulator.SaveFormat.PNG }
       );
 
-      // STEP 1: Try to match Vision text by Y position
-      const cellYInCroppedImage = cellY - CROP_Y;
-      let visionText = '';
-      let visionRow = -1;
-      let visionColumn = -1;
-      let visionConfidence = 0;
-      let matchedByVision = false;
-
-      if (columnOCR.tables && columnOCR.tables.length > 0) {
-        const table = columnOCR.tables[0];
-        for (const column of table.columns || []) {
-          for (const cell of column.cells || []) {
-            if (cell.boundingBox && cell.text && cell.text.trim()) {
-              const visionCellY = cell.boundingBox.yMin;
-              const visionCellHeight = cell.boundingBox.yMax - cell.boundingBox.yMin;
-              const yDiff = Math.abs(visionCellY - cellYInCroppedImage);
-              
-              if (visionCellHeight <= 50 && yDiff < 10) {
-                visionText = cell.text.trim();
-                visionRow = cell.rowIndex;
-                visionColumn = cell.columnIndex;
-                visionConfidence = cell.confidence || 0;
-                matchedByVision = true;
-                break;
-              }
-            }
-          }
-          if (matchedByVision) break;
-        }
-      }
-
-      // STEP 2: Try OCR on individual cell
-      let cellHasVisionText = false;
-      let cellVisionText = '';
-      
+      // FIRST: Try OCR on the FULL cell (both sub-columns together)
+      let fullCellText = '';
       try {
-        const cellOCR = await DocumentRecognizer({
+        const fullCellOCR = await DocumentRecognizer({
           uri: croppedFullCell.uri,
           searchCells: [],
         });
-        
-        if (cellOCR.rawText && cellOCR.rawText.trim().length > 0) {
-          const cleanText = cellOCR.rawText.trim();
-          const isRealContent = cleanText.length > 0 && !cleanText.match(/^[|\-_\s]+$/);
-          
-          if (isRealContent) {
-            cellHasVisionText = true;
-            cellVisionText = cleanText;
-          }
+        if (fullCellOCR.rawText && fullCellOCR.rawText.trim()) {
+          fullCellText = fullCellOCR.rawText.trim();
         }
       } catch (error: any) {
         // Ignore
       }
 
-      if (cellHasVisionText && !matchedByVision) {
-        visionText = cellVisionText;
-        matchedByVision = true;
+      // Parse the full cell text to extract hours and tenths
+      let hours = '';
+      let tenths = '';
+      
+      if (fullCellText) {
+        // Remove all non-digit characters except spaces
+        const cleaned = fullCellText.replace(/[^0-9\s]/g, '');
+        const digits = cleaned.split(/\s+/).filter(d => d.length > 0);
+        
+        if (digits.length === 2) {
+          // Two separate digits: "2 4" -> 2.4
+          hours = digits[0];
+          tenths = digits[1];
+        } else if (digits.length === 1) {
+          const singleDigit = digits[0];
+          if (singleDigit.length === 2) {
+            // Two digits together: "24" -> 2.4
+            hours = singleDigit[0];
+            tenths = singleDigit[1];
+          } else if (singleDigit.length === 1) {
+            // Single digit - could be hours or tenths
+            // For now, assume it's the tenths (more common to miss the hours)
+            hours = '';
+            tenths = singleDigit;
+          }
+        }
       }
 
-      // STEP 3: Determine if cell has content
-      const pixelFallback = !cellHasVisionText && !matchedByVision && fileSize > pixelThreshold;
-      const hasContent = cellHasVisionText || matchedByVision || pixelFallback;
+      // Run OCR on sub-columns as fallback (only if full cell didn't work)
+      let sub1Text = '';
+      let sub2Text = '';
       
-      const detectionMethod = cellHasVisionText ? 'Individual Cell OCR' : 
-                             (matchedByVision ? 'Column Y-Position Match' : 
-                             (pixelFallback ? 'Pixel Fallback' : 'None'));
+      if (!hours && !tenths) {
+        try {
+          const sub1OCR = await DocumentRecognizer({
+            uri: croppedSub1.uri,
+            searchCells: [],
+          });
+          if (sub1OCR.rawText && sub1OCR.rawText.trim()) {
+            const rawText = sub1OCR.rawText.trim();
+            sub1Text = rawText.replace(/[^0-9]/g, '');
+            if (sub1Text) {
+              hours = sub1Text;
+            }
+          }
+        } catch (error: any) {
+          // Ignore
+        }
+
+        try {
+          const sub2OCR = await DocumentRecognizer({
+            uri: croppedSub2.uri,
+            searchCells: [],
+          });
+          if (sub2OCR.rawText && sub2OCR.rawText.trim()) {
+            const rawText = sub2OCR.rawText.trim();
+            sub2Text = rawText.replace(/[^0-9]/g, '');
+            if (sub2Text) {
+              tenths = sub2Text;
+            }
+          }
+        } catch (error: any) {
+          // Ignore
+        }
+      }
+
+      // Combine into vision text
+      let visionText = '';
+      if (hours || tenths) {
+        visionText = `${hours || '0'}.${tenths || '0'}`;
+      }
+
+      // Get LLM column result for this row (from full column extraction)
+      const llmColumnValue = llmColumnResult[i] || '';
+
+      // Store full cell text for analysis
+      const fullCellRaw = fullCellText;
+
+      // Determine if cell has content
+      const hasContent = (hours.length > 0 || tenths.length > 0) || fileSize > pixelThreshold;
+      const detectionMethod = (hours || tenths) ? 'Vision OCR' : (fileSize > pixelThreshold ? 'Pixel Fallback' : 'None');
 
       extractions.push({
         row: rowNum,
@@ -449,11 +814,15 @@ async function extractFlightDurationColumn(
         hasContent: hasContent,
         fileSize: fileSize,
         visionText: visionText,
-        visionRow: visionRow,
-        visionColumn: visionColumn,
-        visionConfidence: visionConfidence,
-        matchedByVision: matchedByVision,
-        cellHasVisionText: cellHasVisionText,
+        fullCellText: fullCellRaw,
+        sub1Text: hours,
+        sub2Text: tenths,
+        llmColumnValue: llmColumnValue,
+        visionRow: -1,
+        visionColumn: -1,
+        visionConfidence: 0,
+        matchedByVision: (hours.length > 0 || tenths.length > 0),
+        cellHasVisionText: (hours.length > 0 || tenths.length > 0),
         detectionMethod: detectionMethod,
         boundingBox: { x: x, y: cellY, width: width, height: height },
         croppedImageUri: croppedFullCell.uri,
@@ -472,6 +841,55 @@ async function extractFlightDurationColumn(
 
   console.log(`  ${columnName}: ${extractions.filter((c: any) => c.hasContent).length}/14 cells with content`);
 
+  // ========== HYBRID CORRECTION: Map LLM's compacted values to correct positions ==========
+  if (llmColumnResult.length > 0) {
+    console.log(`  [Hybrid] Mapping LLM compacted values to correct positions...`);
+    console.log(`  [Hybrid] LLM returned ${llmColumnResult.length} values (compacted, no empties)`);
+    console.log(`  [Hybrid] LLM values: ${JSON.stringify(llmColumnResult)}`);
+    
+    // Strategy: LLM returns only non-empty values in a compacted list.
+    // Use pixel/Vision detection to know which rows have content, then map LLM values to those positions.
+    // Example: If rows are [EMPTY, EMPTY, HAS, HAS, EMPTY, HAS] and LLM returns ["2.1", "3.2", "0.7"]
+    // Result should be ["", "", "2.1", "3.2", "", "0.7"]
+    
+    const correctedLlmResult: string[] = [];
+    let llmValueIndex = 0; // Index into the compacted LLM values array
+    
+    for (let i = 0; i < 14; i++) {
+      const cell = extractions[i];
+      
+      if (!cell.hasContent) {
+        // Pixel detection says empty - insert empty string
+        correctedLlmResult.push('');
+      } else {
+        // Pixel detection says content - take next LLM value
+        if (llmValueIndex < llmColumnResult.length) {
+          const llmValue = llmColumnResult[llmValueIndex] || '';
+          correctedLlmResult.push(llmValue);
+          llmValueIndex++;
+        } else {
+          // Ran out of LLM values - this shouldn't happen but handle gracefully
+          console.log(`  [Hybrid] Warning: Row ${i + 1} has content but no LLM value available`);
+          correctedLlmResult.push('');
+        }
+      }
+    }
+    
+    console.log(`  [Hybrid] Corrected LLM: ${JSON.stringify(correctedLlmResult)}`);
+    console.log(`  [Hybrid] Pixel detection: ${extractions.map((c: any) => c.hasContent ? '✓' : '✗').join(' ')}`);
+    console.log(`  [Hybrid] Used ${llmValueIndex} of ${llmColumnResult.length} LLM values`);
+    
+    // Replace with corrected version
+    llmColumnResult = correctedLlmResult;
+    
+    // Update extractions with corrected LLM values
+    extractions.forEach((cell: any, idx: number) => {
+      cell.llmColumnValue = correctedLlmResult[idx] || '';
+    });
+  } else {
+    console.log(`  [Hybrid] No LLM values returned, skipping correction`);
+  }
+
   return {
     extractions,
     croppedColumnUri: croppedColumn.uri,
@@ -482,10 +900,17 @@ async function extractFlightDurationColumn(
       columnCount: columnOCR.tables?.[0]?.columnCount || 0,
       rawText: columnOCR.rawText,
     },
+    llmColumnResult: llmColumnResult,
   };
 }
 
 export default function HybridFlightLogExtractor() {
+  // UI Display Control - set to true to show detailed column images
+  const SHOW_ALL_COLUMNS = true; // Set to true to see all column details
+  const SHOW_TOTAL_DURATION = true; // Always show TOTAL DURATION for debugging
+  const SHOW_TURBOJET = true; // Show TURBOJET (sparse column with gaps)
+  const SHOW_TURBOPROP = true; // Show TURBOPROP (starts empty, has values in middle)
+  
   const [leftImage, setLeftImage] = useState<string | null>(null);
   const [rightImage, setRightImage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -781,6 +1206,10 @@ export default function HybridFlightLogExtractor() {
     setResult2(null);
     setBackgroundWarning(false);
 
+    // Generate unique request ID for cache busting
+    const requestId = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
+    console.log(`[Process] Starting extraction with Request ID: ${requestId}`);
+
     try {
       // Step 1: Get OCR bounding boxes
       console.log('[Process] Step 1: Starting Vision OCR...');
@@ -794,7 +1223,18 @@ export default function HybridFlightLogExtractor() {
       });
       const ocrDuration = ((Date.now() - ocrStartTime) / 1000).toFixed(1);
 
-      // Log raw OCR results
+      console.log(`[Process] OCR complete in ${ocrDuration}s:`, {
+        leftCells: ocrResult.cellData.left.length,
+        rightCells: ocrResult.cellData.right.length,
+        leftColumns: ocrResult.leftTable.columnCount,
+        rightColumns: ocrResult.rightTable.columnCount,
+        leftRows: ocrResult.leftTable.rowCount,
+        rightRows: ocrResult.rightTable.rowCount,
+      });
+
+      // ========== HIDE DETAILED OCR LOGGING ==========
+      // Uncomment below to see raw OCR results
+      /*
       console.log('========== RAW OCR RESULTS ==========');
       console.log('LEFT PAGE:');
       console.log(JSON.stringify(ocrResult.leftTable, null, 2));
@@ -809,16 +1249,11 @@ export default function HybridFlightLogExtractor() {
         JSON.stringify(ocrResult.cellData.right.slice(0, 20), null, 2)
       );
       console.log('=====================================\n');
+      */
 
-      console.log(`[Process] OCR complete in ${ocrDuration}s:`, {
-        leftCells: ocrResult.cellData.left.length,
-        rightCells: ocrResult.cellData.right.length,
-        leftColumns: ocrResult.leftTable.columnCount,
-        rightColumns: ocrResult.rightTable.columnCount,
-        leftRows: ocrResult.leftTable.rowCount,
-        rightRows: ocrResult.rightTable.rowCount,
-      });
-
+      // ========== TEMPORARILY DISABLED: DATE, TURBOJET, TURBOPROP EXTRACTION ==========
+      // Commenting out to focus on TOTAL DURATION only
+      /*
       // ========== EXTRACT DATE COLUMN FROM TABLE STRUCTURE ==========
       console.log('[Process] Step 2: Extracting DATE column cells...');
       setStatus('Finding DATE header...');
@@ -1836,11 +2271,51 @@ export default function HybridFlightLogExtractor() {
       console.log('========== FINAL TURBOPROP EXTRACTIONS ==========');
       console.log(JSON.stringify(turbopropExtractions, null, 2));
       console.log('================================================\n');
+      */
+      // End of commented out DATE, TURBOJET, TURBOPROP extraction
 
-      // ========== EXTRACT TEXT COLUMNS ==========
-      console.log('[Process] Step 5: Extracting text columns...');
-      setStatus('Extracting text columns...');
+      // ========== EXTRACT DATE COLUMN ==========
+      console.log('[Process] Step 5: Extracting DATE column...');
+      setStatus('Extracting DATE column...');
       setProgress(85);
+
+      const dateResult = await extractTextColumn('DATE', 16, 101, 48, 34, leftImage, 1200, contextRef.current, requestId);
+      const dateExtractions = dateResult.extractions;
+      const cellPresenceMap = dateExtractions;
+
+      // Create a simple dateHeader object for display purposes
+      const dateHeader = { 
+        value: 'DATE', 
+        row: 0, 
+        column: 0, 
+        boundingBox: { x: 16, y: 65, width: 56, height: 34 } 
+      };
+
+      // Create dummy data for other text columns (not yet implemented)
+      const aircraftMakeExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
+      const aircraftIdentExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
+      const fromToExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
+      const selExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
+      const sesExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
+      const melExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
+      const heliExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
+      const gliderExtractions = Array.from({length: 14}, (_, i) => ({ row: i + 1, hasContent: false }));
+      
+      // Create dummy result objects for commented out columns
+      const aircraftMakeResult = { extractions: aircraftMakeExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
+      const aircraftIdentResult = { extractions: aircraftIdentExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
+      const fromToResult = { extractions: fromToExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
+      const selResult = { extractions: selExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
+      const sesResult = { extractions: sesExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
+      const melResult = { extractions: melExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
+      const heliResult = { extractions: heliExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
+      const gliderResult = { extractions: gliderExtractions, croppedColumnUri: '', columnBbox: {}, ocrResult: {} };
+
+      // ========== EXTRACT TEXT COLUMNS (TEMPORARILY DISABLED) ==========
+      // Commenting out other text columns to focus on DATE, TOTAL DURATION, TURBOJET, TURBOPROP
+      /*
+      console.log('[Process] Step 5b: Extracting other text columns...');
+      setStatus('Extracting text columns...');
 
       // Extract 3 text columns using helper function (similar to DATE)
       // All are non-shaded and should have values in all rows
@@ -1851,41 +2326,48 @@ export default function HybridFlightLogExtractor() {
       const aircraftMakeExtractions = aircraftMakeResult.extractions;
       const aircraftIdentExtractions = aircraftIdentResult.extractions;
       const fromToExtractions = fromToResult.extractions;
+      */
 
-      // ========== EXTRACT ALL FLIGHT DURATION COLUMNS ==========
-      console.log('[Process] Step 6: Extracting flight duration columns...');
-      setStatus('Extracting flight duration columns...');
-      setProgress(90);
+      // ========== EXTRACT TOTAL DURATION COLUMN ==========
+      console.log('[Process] Step 6: Extracting TOTAL DURATION column...');
+      setStatus('Extracting TOTAL DURATION column...');
+      setProgress(88);
 
-      // Extract all 6 flight duration columns using helper function
-      // Pixel thresholds tuned based on shading:
-      // - Shaded columns (TOTAL, SES, GLIDER) need higher thresholds due to gray background
-      // - Non-shaded columns (SEL, MEL, HELI) can use lower thresholds
-      const totalResult = await extractFlightDurationColumn('TOTAL DURATION', 292, 100, 66, 34, leftImage, 5500); // Shaded, all have content
+      const totalResult = await extractFlightDurationColumn('TOTAL DURATION', 292, 100, 66, 34, leftImage, 5500, contextRef.current, requestId); // Shaded, all have content
+      const totalExtractions = totalResult.extractions;
+
+      // ========== EXTRACT TURBOJET AND TURBOPROP COLUMNS ==========
+      console.log('[Process] Step 7: Extracting TURBOJET and TURBOPROP columns...');
+      setStatus('Extracting TURBOJET and TURBOPROP columns...');
+      setProgress(92);
+
+      const turbojetResult = await extractFlightDurationColumn('TURBOJET', 566, 101, 67, 34, leftImage, 5800, contextRef.current, requestId);
+      const turbojetExtractions = turbojetResult.extractions;
+
+      const turbopropResult = await extractFlightDurationColumn('TURBOPROP', 776, 101, 67, 34, leftImage, 3000, contextRef.current, requestId); // White background - much lower threshold
+      const turbopropExtractions = turbopropResult.extractions;
+
+      /*
+      // Other flight duration columns - commented out for now
       const selResult = await extractFlightDurationColumn('SINGLE-ENGINE LAND', 360, 101, 65, 34, leftImage, 5800);
       const sesResult = await extractFlightDurationColumn('SINGLE-ENGINE SEA', 428, 101, 65, 34, leftImage, 10000); // Shaded, all empty - very high threshold
       const melResult = await extractFlightDurationColumn('MULTI-ENGINE LAND', 496, 101, 67, 34, leftImage, 3000); // Non-shaded, all have content - very low threshold
       const heliResult = await extractFlightDurationColumn('ROTORCRAFT HELICOPTER', 636, 101, 67, 34, leftImage, 5800); // Non-shaded
       const gliderResult = await extractFlightDurationColumn('GLIDER', 706, 101, 68, 34, leftImage, 10000); // Shaded, all empty - very high threshold
 
-      const totalExtractions = totalResult.extractions;
       const selExtractions = selResult.extractions;
       const sesExtractions = sesResult.extractions;
       const melExtractions = melResult.extractions;
       const heliExtractions = heliResult.extractions;
       const gliderExtractions = gliderResult.extractions;
+      */
+
+      // Dummy data already created above
 
       setProgress(95);
       setStatus('Finalizing results...');
 
-      // Create a cell presence map for the LLM
-      const cellPresenceMap = dateExtractions.map((cell: any) => ({
-        row: cell.row,
-        hasContent: cell.hasContent, // Detected by Vision OR pixel analysis
-        visionText: cell.text || '', // What Vision read (even if wrong)
-        confidence: cell.confidence,
-        detectionMethod: cell.matchedByPosition ? 'Vision' : (cell.hasContentByPixels ? 'Pixels' : 'None'),
-      }));
+      // Cell presence map already created above as dummy data
 
       setProgress(100);
       setStatus(`Complete! Extracted ${dateExtractions.length} DATE, 3 text columns, ${turbojetExtractions.length} TURBOJET, ${turbopropExtractions.length} TURBOPROP, and 6 flight duration columns`);
@@ -1896,13 +2378,91 @@ export default function HybridFlightLogExtractor() {
       console.log(`[Process] FROM-TO: ${fromToExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
       console.log(`[Process] TURBOJET: ${turbojetExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
       console.log(`[Process] TURBOPROP: ${turbopropExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
-      console.log(`[Process] TOTAL DURATION: ${totalExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
       console.log(`[Process] SINGLE-ENGINE LAND: ${selExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
       console.log(`[Process] SINGLE-ENGINE SEA: ${sesExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
       console.log(`[Process] MULTI-ENGINE LAND: ${melExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
       console.log(`[Process] ROTORCRAFT HELICOPTER: ${heliExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
       console.log(`[Process] GLIDER: ${gliderExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
 
+      // ========== DETAILED LOGGING FOR TOTAL DURATION ONLY ==========
+      console.log('\n========== TOTAL DURATION COLUMN DETAILS ==========');
+      console.log(`[Process] TOTAL DURATION: ${totalExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
+      console.log(`[LLM] Column-level extraction: ${totalResult.llmColumnResult?.length || 0} values`);
+      if (totalResult.llmColumnResult && totalResult.llmColumnResult.length > 0) {
+        console.log(`[LLM] Column values: ${JSON.stringify(totalResult.llmColumnResult)}`);
+      }
+      console.log('\n--- Per-Row Comparison ---');
+      totalExtractions.forEach((cell: any) => {
+        console.log(`  Row ${cell.row}: ${cell.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'}`);
+        console.log(`    Vision Detection: ${cell.detectionMethod}`);
+        console.log(`    Vision Full Cell: "${cell.fullCellText || ''}"`);
+        console.log(`    Vision Parsed: hours="${cell.sub1Text || ''}", tenths="${cell.sub2Text || ''}"`);
+        console.log(`    Vision Combined: "${cell.visionText || ''}"`);
+        console.log(`    LLM Column: "${cell.llmColumnValue || ''}"`);
+        console.log(`    File Size: ${cell.fileSize} bytes`);
+        
+        // Compare results
+        const visionValue = cell.visionText || '';
+        const llmColumnValue = cell.llmColumnValue || '';
+        
+        if (visionValue && llmColumnValue && visionValue !== llmColumnValue) {
+          console.log(`    ⚠️  MISMATCH: Vision="${visionValue}" vs LLM Column="${llmColumnValue}"`);
+        }
+        if (visionValue && llmColumnValue && visionValue !== llmColumnValue) {
+          console.log(`    ⚠️  MISMATCH: Vision="${visionValue}" vs LLM Column="${llmColumnValue}"`);
+        }
+      });
+      console.log('===================================================\n');
+
+      // ========== DETAILED LOGGING FOR TURBOJET ==========
+      console.log('\n========== TURBOJET COLUMN DETAILS ==========');
+      console.log(`[Process] TURBOJET: ${turbojetExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
+      console.log(`[LLM] Column-level extraction: ${turbojetResult.llmColumnResult?.length || 0} values`);
+      if (turbojetResult.llmColumnResult && turbojetResult.llmColumnResult.length > 0) {
+        console.log(`[LLM] Column values: ${JSON.stringify(turbojetResult.llmColumnResult)}`);
+      }
+      console.log('\n--- Per-Row Comparison ---');
+      turbojetExtractions.forEach((cell: any) => {
+        console.log(`  Row ${cell.row}: ${cell.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'}`);
+        console.log(`    Vision: "${cell.visionText || ''}"`);
+        console.log(`    LLM Column: "${cell.llmColumnValue || ''}"`);
+        console.log(`    File Size: ${cell.fileSize} bytes`);
+        
+        const visionValue = cell.visionText || '';
+        const llmColumnValue = cell.llmColumnValue || '';
+        
+        if (visionValue && llmColumnValue && visionValue !== llmColumnValue) {
+          console.log(`    ⚠️  MISMATCH: Vision="${visionValue}" vs LLM Column="${llmColumnValue}"`);
+        }
+      });
+      console.log('=============================================\n');
+
+      // ========== DETAILED LOGGING FOR TURBOPROP ==========
+      console.log('\n========== TURBOPROP COLUMN DETAILS ==========');
+      console.log(`[Process] TURBOPROP: ${turbopropExtractions.filter((c: any) => c.hasContent).length}/14 cells`);
+      console.log(`[LLM] Column-level extraction: ${turbopropResult.llmColumnResult?.length || 0} values`);
+      if (turbopropResult.llmColumnResult && turbopropResult.llmColumnResult.length > 0) {
+        console.log(`[LLM] Column values: ${JSON.stringify(turbopropResult.llmColumnResult)}`);
+      }
+      console.log('\n--- Per-Row Comparison ---');
+      turbopropExtractions.forEach((cell: any) => {
+        console.log(`  Row ${cell.row}: ${cell.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'}`);
+        console.log(`    Vision: "${cell.visionText || ''}"`);
+        console.log(`    LLM Column: "${cell.llmColumnValue || ''}"`);
+        console.log(`    File Size: ${cell.fileSize} bytes`);
+        
+        const visionValue = cell.visionText || '';
+        const llmColumnValue = cell.llmColumnValue || '';
+        
+        if (visionValue && llmColumnValue && visionValue !== llmColumnValue) {
+          console.log(`    ⚠️  MISMATCH: Vision="${visionValue}" vs LLM Column="${llmColumnValue}"`);
+        }
+      });
+      console.log('==============================================\n');
+
+      // Hide detailed logging for other columns
+      // Uncomment below to see details for all columns
+      /*
       console.log('========== CELL PRESENCE MAP ==========');
       console.log('This map tells the LLM which cells have content vs which are empty:');
       console.log('\nDATE Column:');
@@ -1929,10 +2489,6 @@ export default function HybridFlightLogExtractor() {
       turbopropExtractions.forEach((cell: any) => {
         console.log(`  Row ${cell.row}: ${cell.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${cell.detectionMethod})`);
       });
-      console.log('\nTOTAL DURATION Column:');
-      totalExtractions.forEach((cell: any) => {
-        console.log(`  Row ${cell.row}: ${cell.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${cell.detectionMethod})`);
-      });
       console.log('\nSINGLE-ENGINE LAND Column:');
       selExtractions.forEach((cell: any) => {
         console.log(`  Row ${cell.row}: ${cell.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${cell.detectionMethod})`);
@@ -1945,6 +2501,7 @@ export default function HybridFlightLogExtractor() {
       melExtractions.forEach((cell: any) => {
         console.log(`  Row ${cell.row}: ${cell.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${cell.detectionMethod})`);
       });
+      */
       console.log('\nROTORCRAFT HELICOPTER Column:');
       heliExtractions.forEach((cell: any) => {
         console.log(`  Row ${cell.row}: ${cell.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${cell.detectionMethod})`);
@@ -1962,14 +2519,14 @@ export default function HybridFlightLogExtractor() {
           dateHeader: dateHeader,
           dateCells: dateExtractions,
           cellPresenceMap: cellPresenceMap,
-          croppedColumnUri: croppedColumn.uri,
-          columnBbox: fullColumnBbox,
+          croppedColumnUri: dateResult.croppedColumnUri,
+          columnBbox: dateResult.columnBbox,
           columnOCRResult: {
-            tablesCount: columnOCR.tables?.length || 0,
-            rowCount: columnOCR.tables?.[0]?.rowCount || 0,
-            columnCount: columnOCR.tables?.[0]?.columnCount || 0,
-            cellConfidencesCount: columnOCR.cellConfidences?.length || 0,
-            rawText: columnOCR.rawText,
+            tablesCount: dateResult.ocrResult.tablesCount || 0,
+            rowCount: dateResult.ocrResult.rowCount || 0,
+            columnCount: dateResult.ocrResult.columnCount || 0,
+            cellConfidencesCount: 0,
+            rawText: dateResult.ocrResult.rawText || '',
           },
           // Add AIRCRAFT MAKE column data
           aircraftMakeCells: aircraftMakeExtractions,
@@ -1988,24 +2545,14 @@ export default function HybridFlightLogExtractor() {
           fromToOCRResult: fromToResult.ocrResult,
           // Add TURBOJET column data
           turbojetCells: turbojetExtractions,
-          croppedTurbojetColumnUri: croppedTurbojetColumn.uri,
-          turbojetColumnBbox: turbojetColumnBbox,
-          turbojetOCRResult: {
-            tablesCount: turbojetOCR.tables?.length || 0,
-            rowCount: turbojetOCR.tables?.[0]?.rowCount || 0,
-            columnCount: turbojetOCR.tables?.[0]?.columnCount || 0,
-            rawText: turbojetOCR.rawText,
-          },
+          croppedTurbojetColumnUri: turbojetResult.croppedColumnUri,
+          turbojetColumnBbox: turbojetResult.columnBbox,
+          turbojetOCRResult: turbojetResult.ocrResult,
           // Add TURBOPROP column data
           turbopropCells: turbopropExtractions,
-          croppedTurbopropColumnUri: croppedTurbopropColumn.uri,
-          turbopropColumnBbox: turbopropColumnBbox,
-          turbopropOCRResult: {
-            tablesCount: turbopropOCR.tables?.length || 0,
-            rowCount: turbopropOCR.tables?.[0]?.rowCount || 0,
-            columnCount: turbopropOCR.tables?.[0]?.columnCount || 0,
-            rawText: turbopropOCR.rawText,
-          },
+          croppedTurbopropColumnUri: turbopropResult.croppedColumnUri,
+          turbopropColumnBbox: turbopropResult.columnBbox,
+          turbopropOCRResult: turbopropResult.ocrResult,
           // Add TOTAL DURATION column data
           totalCells: totalExtractions,
           croppedTOTALColumnUri: totalResult.croppedColumnUri,
@@ -2063,41 +2610,34 @@ export default function HybridFlightLogExtractor() {
           sub1HasContent: c.sub1HasContent,
           sub2HasContent: c.sub2HasContent,
         })),
-        rawLLMOutput: `Column Extraction Results\n\n` +
-          `DATE Column: ${cellPresenceMap.filter((c: any) => c.hasContent).length}/14 cells with content\n` +
-          `AIRCRAFT MAKE Column: ${aircraftMakeExtractions.filter((c: any) => c.hasContent).length}/14 cells with content\n` +
-          `AIRCRAFT IDENT Column: ${aircraftIdentExtractions.filter((c: any) => c.hasContent).length}/14 cells with content\n` +
-          `FROM-TO Column: ${fromToExtractions.filter((c: any) => c.hasContent).length}/14 cells with content\n` +
-          `TURBOJET Column: ${turbojetExtractions.filter((c: any) => c.hasContent).length}/14 cells with content\n` +
-          `TURBOPROP Column: ${turbopropExtractions.filter((c: any) => c.hasContent).length}/14 cells with content\n` +
-          `SINGLE-ENGINE LAND Column: ${selExtractions.filter((c: any) => c.hasContent).length}/14 cells with content\n\n` +
+        rawLLMOutput: 
           `DATE Column:\n` +
           cellPresenceMap.map((c: any) => 
-            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.visionText ? `Vision: "${c.visionText}"` : ''}`
+            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.visionText ? `Vision: "${c.visionText}"` : ''} ${c.llmColumnValue ? `LLM: "${c.llmColumnValue}"` : ''}`
           ).join('\n') +
           `\n\nAIRCRAFT MAKE Column:\n` +
           aircraftMakeExtractions.map((c: any) => 
-            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.text ? `Vision: "${c.text}"` : ''}`
+            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.text ? `Vision: "${c.text}"` : ''} ${c.llmColumnValue ? `LLM: "${c.llmColumnValue}"` : ''}`
           ).join('\n') +
           `\n\nAIRCRAFT IDENT Column:\n` +
           aircraftIdentExtractions.map((c: any) => 
-            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.text ? `Vision: "${c.text}"` : ''}`
+            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.text ? `Vision: "${c.text}"` : ''} ${c.llmColumnValue ? `LLM: "${c.llmColumnValue}"` : ''}`
           ).join('\n') +
           `\n\nFROM-TO Column:\n` +
           fromToExtractions.map((c: any) => 
-            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.text ? `Vision: "${c.text}"` : ''}`
+            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.text ? `Vision: "${c.text}"` : ''} ${c.llmColumnValue ? `LLM: "${c.llmColumnValue}"` : ''}`
           ).join('\n') +
           `\n\nTURBOJET Column:\n` +
           turbojetExtractions.map((c: any) => 
-            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.visionText ? `Vision: "${c.visionText}"` : ''}`
+            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.visionText ? `Vision: "${c.visionText}"` : ''} ${c.llmColumnValue ? `LLM: "${c.llmColumnValue}"` : ''}`
           ).join('\n') +
           `\n\nTURBOPROP Column:\n` +
           turbopropExtractions.map((c: any) => 
-            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.visionText ? `Vision: "${c.visionText}"` : ''}`
+            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.visionText ? `Vision: "${c.visionText}"` : ''} ${c.llmColumnValue ? `LLM: "${c.llmColumnValue}"` : ''}`
           ).join('\n') +
           `\n\nSINGLE-ENGINE LAND Column:\n` +
           selExtractions.map((c: any) => 
-            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.visionText ? `Vision: "${c.visionText}"` : ''}`
+            `Row ${c.row}: ${c.hasContent ? '✓ HAS CONTENT' : '✗ EMPTY'} (${c.detectionMethod}) ${c.visionText ? `Vision: "${c.visionText}"` : ''} ${c.llmColumnValue ? `LLM: "${c.llmColumnValue}"` : ''}`
           ).join('\n'),
         csv: 'Row,Date,Aircraft_Make_Model,Aircraft_Ident,From_To,Total_Duration,Single_Engine_Land,Single_Engine_Sea,Multi_Engine_Land,Turbojet,Turboprop,Rotorcraft_Helicopter,Glider\n' + 
           dateExtractions.map((d: any, idx: number) => {
@@ -2113,26 +2653,31 @@ export default function HybridFlightLogExtractor() {
             const heli = heliExtractions[idx];
             const glider = gliderExtractions[idx];
             
-            // Helper function to get value with default
-            const getValue = (cell: any, defaultValue: string) => {
+            // Helper function to get FINAL value (LLM column result if available, otherwise Vision/text)
+            const getFinalValue = (cell: any) => {
               if (!cell.hasContent) return '';
+              // For duration columns, prefer LLM column result
+              if (cell.llmColumnValue !== undefined && cell.llmColumnValue !== null) {
+                return cell.llmColumnValue;
+              }
+              // For text columns, use Vision text
               const text = cell.text || cell.visionText || '';
-              return text.trim() || defaultValue;
+              return text.trim();
             };
             
             return `${d.row},` +
-              `"${getValue(d, '1/1')}",` +
-              `"${getValue(make, 'MODEL')}",` +
-              `"${getValue(ident, 'IDENT')}",` +
-              `"${getValue(fromTo, 'FROM-TO')}",` +
-              `"${getValue(total, '0.0')}",` +
-              `"${getValue(sel, '0.0')}",` +
-              `"${getValue(ses, '0.0')}",` +
-              `"${getValue(mel, '0.0')}",` +
-              `"${getValue(tj, '0.0')}",` +
-              `"${getValue(tp, '0.0')}",` +
-              `"${getValue(heli, '0.0')}",` +
-              `"${getValue(glider, '0.0')}"`;
+              `"${getFinalValue(d)}",` +
+              `"${getFinalValue(make)}",` +
+              `"${getFinalValue(ident)}",` +
+              `"${getFinalValue(fromTo)}",` +
+              `"${getFinalValue(total)}",` +
+              `"${getFinalValue(sel)}",` +
+              `"${getFinalValue(ses)}",` +
+              `"${getFinalValue(mel)}",` +
+              `"${getFinalValue(tj)}",` +
+              `"${getFinalValue(tp)}",` +
+              `"${getFinalValue(heli)}",` +
+              `"${getFinalValue(glider)}"`;
           }).join('\n'),
       });
 
@@ -2376,16 +2921,27 @@ Return ONLY the JSON array, no explanations or markdown code fences.`;
       // Define column batches - extract 4-5 columns at a time
       const columnBatches = [
         {
-          name: 'Basic Info',
-          prompt: `Extract these columns from the flight log (left page):
-1. DATE (M/D format)
-2. AIRCRAFT MAKE AND MODEL (e.g., LR25, BE-200)
+          name: 'First 3 Columns (DATE, AIRCRAFT, IDENT)',
+          prompt: `Extract ONLY these first 3 columns from the flight log (left page):
+1. DATE (M/D format - CRITICAL: Read the month digit carefully. 9/10 means September 10, NOT August)
+2. AIRCRAFT MAKE AND MODEL (e.g., LR25, BE-200, IA1124)
 3. AIRCRAFT IDENT (N-number)
-4. FROM-TO (airport codes)
-5. TOTAL DURATION (hours.tenths, e.g., 2|8 = 2.8)
+
+FOCUS ONLY ON THESE 3 COLUMNS. Ignore all other columns.
 
 Return JSON array with one object per row. Use empty string for blank cells.
-Format: [{"date": "9/10", "aircraft": "LR25", "ident": "N308AJ", "route": "HOU-GLS", "total": "2.8"}, ...]`
+Format: [{"date": "9/10", "aircraft": "LR25", "ident": "N308AJ"}, ...]
+
+CRITICAL: For DATE column, read each date independently. Do NOT create patterns or sequences. If you see 9/10, that is September 10 (month 9, day 10).`
+        },
+        {
+          name: 'Route and Duration',
+          prompt: `Extract these columns from the flight log (left page):
+1. FROM-TO (airport codes with hyphens)
+2. TOTAL DURATION (hours.tenths, e.g., 2|8 = 2.8)
+
+Return JSON array with one object per row. Use empty string for blank cells.
+Format: [{"route": "HOU-GLS", "total": "2.8"}, ...]`
         },
         {
           name: 'Aircraft Categories',
@@ -2438,6 +2994,14 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
         
         console.log(`[Process] Batch ${i + 1}/${columnBatches.length}: ${batch.name}`);
         
+        // Special logging for first 3 columns batch
+        if (i === 0) {
+          console.log(`[Process] ========== FIRST 3 COLUMNS BATCH ==========`);
+          console.log(`[Process] This batch focuses ONLY on DATE, AIRCRAFT MAKE, and AIRCRAFT IDENT`);
+          console.log(`[Process] Prompt: ${batch.prompt}`);
+          console.log(`[Process] ================================================`);
+        }
+        
         let tokenCount = 0;
         let lastLogTime = Date.now();
         const batchStartTime = Date.now();
@@ -2449,8 +3013,8 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
                 role: 'user',
                 content: [
                   { type: 'text', text: batch.prompt },
-                  { type: 'image_url', image_url: { url: leftImage } },
-                  { type: 'image_url', image_url: { url: rightImage } },
+                  { type: 'image_url', image_url: { url: leftImage! } },
+                  { type: 'image_url', image_url: { url: rightImage! } },
                 ],
               },
             ],
@@ -2484,6 +3048,17 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
         // Parse this batch
         const batchData = parseModelOutput(completion.text);
         console.log(`[Process] Batch ${i + 1} parsed ${batchData.length} rows`);
+        
+        // Special logging for first 3 columns batch
+        if (i === 0) {
+          console.log(`[Process] ========== FIRST 3 COLUMNS RESULTS ==========`);
+          console.log(`[Process] LLM extracted ${batchData.length} rows`);
+          console.log(`[Process] Here's what the LLM saw in the first 3 columns:`);
+          batchData.forEach((row: any, idx: number) => {
+            console.log(`[Process]   Row ${idx + 1}: DATE="${row.date}" AIRCRAFT="${row.aircraft}" IDENT="${row.ident}"`);
+          });
+          console.log(`[Process] ===================================================`);
+        }
         
         // Merge with existing data
         if (i === 0) {
@@ -2733,6 +3308,69 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
   };
 
   const convertExtractedDataToCSV = (ocrData: any): string => {
+    // Helper function to parse duration from two sub-columns into decimal format
+    const parseDuration = (cell: any, rowNum: number, columnName: string): string => {
+      if (!cell || !cell.hasContent) {
+        return '';
+      }
+
+      // Try to parse the vision text if available
+      let text = cell.visionText || cell.text || '';
+      
+      console.log(`[CSV] Row ${rowNum} ${columnName}: visionText="${cell.visionText}", text="${cell.text}"`);
+      
+      if (text.trim()) {
+        // Remove common OCR artifacts
+        text = text.replace(/[|\s]/g, '');
+        
+        // Check if it's already in decimal format (e.g., "2.8", "4.2")
+        if (/^\d+\.\d+$/.test(text)) {
+          console.log(`  -> Already decimal: ${text}`);
+          return text;
+        }
+        
+        // Check if it's a single digit (could be hours or tenths)
+        if (/^\d$/.test(text)) {
+          // Single digit - need to determine if it's hours or tenths
+          // For now, assume it's hours if >= 1, tenths if 0
+          const digit = parseInt(text);
+          if (digit === 0) {
+            console.log(`  -> Single digit 0: 0.0`);
+            return '0.0';
+          } else {
+            console.log(`  -> Single digit ${digit}: ${digit}.0`);
+            return `${digit}.0`;
+          }
+        }
+        
+        // Check if it's two digits without separator (e.g., "28" = 2.8)
+        if (/^\d{2}$/.test(text)) {
+          const hours = text[0];
+          const tenths = text[1];
+          const result = `${hours}.${tenths}`;
+          console.log(`  -> Two digits: ${text} = ${result}`);
+          return result;
+        }
+        
+        // Try to extract hours and tenths from various formats
+        // Format: "2 8", "2|8", "28", etc.
+        const match = text.match(/(\d+)[^\d]*(\d+)/);
+        if (match) {
+          const hours = match[1];
+          const tenths = match[2];
+          const result = `${hours}.${tenths}`;
+          console.log(`  -> Parsed: ${text} = ${result}`);
+          return result;
+        }
+        
+        console.log(`  -> Could not parse: "${text}"`);
+      }
+      
+      // Cell has content but no parseable OCR - use default
+      console.log(`  -> Using default: 0.0`);
+      return '0.0';
+    };
+
     // Helper function to get value with defaults
     const getValue = (cell: any, columnType: string): string => {
       // If cell has no content, return empty string
@@ -2807,14 +3445,14 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
         getValue(aircraftMakeCell, 'AIRCRAFT_MAKE'),
         getValue(aircraftIdentCell, 'AIRCRAFT_IDENT'),
         getValue(fromToCell, 'FROM_TO'),
-        getValue(totalCell, 'DURATION'),
-        getValue(selCell, 'DURATION'),
-        getValue(sesCell, 'DURATION'),
-        getValue(melCell, 'DURATION'),
-        getValue(turbojetCell, 'DURATION'),
-        getValue(turbopropCell, 'DURATION'),
-        getValue(heliCell, 'DURATION'),
-        getValue(gliderCell, 'DURATION'),
+        parseDuration(totalCell, rowNum, 'TOTAL DURATION'),
+        parseDuration(selCell, rowNum, 'SINGLE-ENGINE LAND'),
+        parseDuration(sesCell, rowNum, 'SINGLE-ENGINE SEA'),
+        parseDuration(melCell, rowNum, 'MULTI-ENGINE LAND'),
+        parseDuration(turbojetCell, rowNum, 'TURBOJET'),
+        parseDuration(turbopropCell, rowNum, 'TURBOPROP'),
+        parseDuration(heliCell, rowNum, 'ROTORCRAFT HELICOPTER'),
+        parseDuration(gliderCell, rowNum, 'GLIDER'),
       ];
 
       csv += row.join(',') + '\n';
@@ -2974,7 +3612,7 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
               {result.csv && (
                 <View style={styles.dataPreview}>
                   <Text style={styles.previewTitle}>
-                    CSV Format (first 5 rows):
+                    CSV Format (14 rows - Final Results):
                   </Text>
                   <ScrollView style={styles.previewScroll}>
                     <Text style={styles.previewText}>
@@ -3017,7 +3655,7 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
               {result2.csv && (
                 <View style={styles.dataPreview}>
                   <Text style={styles.previewTitle}>
-                    CSV Format (first 5 rows):
+                    CSV Format (14 rows - Final Results):
                   </Text>
                   <ScrollView style={styles.previewScroll}>
                     <Text style={styles.previewText}>
@@ -3138,6 +3776,7 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
               </View>
 
               {/* Display DATE cell images */}
+              {SHOW_ALL_COLUMNS && (
               <View style={styles.dataPreview}>
                 <Text style={styles.previewTitle}>
                   DATE Cell Images (14 cells):
@@ -3173,8 +3812,10 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
                   </View>
                 </ScrollView>
               </View>
+              )}
 
               {/* Display AIRCRAFT MAKE cell images */}
+              {SHOW_ALL_COLUMNS && (
               <View style={styles.dataPreview}>
                 <Text style={styles.previewTitle}>
                   AIRCRAFT MAKE AND MODEL Cell Images (14 cells):
@@ -3209,8 +3850,10 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
                   </View>
                 </ScrollView>
               </View>
+              )}
 
               {/* Display AIRCRAFT IDENT cell images */}
+              {SHOW_ALL_COLUMNS && (
               <View style={styles.dataPreview}>
                 <Text style={styles.previewTitle}>
                   AIRCRAFT IDENT Cell Images (14 cells):
@@ -3245,8 +3888,10 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
                   </View>
                 </ScrollView>
               </View>
+              )}
 
               {/* Display FROM-TO cell images */}
+              {SHOW_ALL_COLUMNS && (
               <View style={styles.dataPreview}>
                 <Text style={styles.previewTitle}>
                   FROM-TO Cell Images (14 cells):
@@ -3281,8 +3926,10 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
                   </View>
                 </ScrollView>
               </View>
+              )}
 
               {/* Display TURBOJET cell images */}
+              {SHOW_ALL_COLUMNS && (
               <View style={styles.dataPreview}>
                 <Text style={styles.previewTitle}>
                   TURBOJET Cell Images (14 cells, 2 sub-columns each):
@@ -3342,8 +3989,11 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
                   </View>
                 </ScrollView>
               </View>
+              )}
 
               {/* Display cropped TURBOPROP column image */}
+              {SHOW_TURBOPROP && (
+              <>
               <View style={styles.dataPreview}>
                 <Text style={styles.previewTitle}>
                   TURBOPROP Column (2 sub-columns):
@@ -3425,8 +4075,12 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
                   </View>
                 </ScrollView>
               </View>
+              </>
+              )}
 
               {/* Display TOTAL DURATION column and cells */}
+              {SHOW_TOTAL_DURATION && (
+              <>
               <View style={styles.dataPreview}>
                 <Text style={styles.previewTitle}>TOTAL DURATION Column:</Text>
                 {result2.ocrData.croppedTOTALColumnUri && (
@@ -3441,14 +4095,19 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
                     {result2.ocrData.totalCells?.map((cell: any, idx: number) => (
                       <View key={idx} style={styles.cellImageContainer}>
                         <Text style={styles.cellImageLabel}>Row {cell.row}: {cell.hasContent ? '✓' : '✗'} ({cell.detectionMethod})</Text>
+                        <Text style={styles.cellImageVision}>Vision: "{cell.visionText || ''}"</Text>
                         {cell.croppedImageUri && <Image source={{ uri: cell.croppedImageUri }} style={styles.cellImage} resizeMode="contain" />}
                       </View>
                     ))}
                   </View>
                 </ScrollView>
               </View>
+              </>
+              )}
 
               {/* Display SINGLE-ENGINE LAND column and cells */}
+              {SHOW_ALL_COLUMNS && (
+              <>
               <View style={styles.dataPreview}>
                 <Text style={styles.previewTitle}>SINGLE-ENGINE LAND Column:</Text>
                 {result2.ocrData.croppedSELColumnUri && (
@@ -3557,6 +4216,8 @@ Format: [{"xc": "2.8", "pic": "", "sic": "2.8", "dual": "", "cfi": "", "remarks"
                   </View>
                 </ScrollView>
               </View>
+              </>
+              )}
 
               <View style={styles.shareButtonsRow}>
                 <TouchableOpacity
