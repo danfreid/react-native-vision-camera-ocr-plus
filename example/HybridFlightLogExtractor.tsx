@@ -167,7 +167,7 @@ async function extractTextColumn(
             // Check if it's a nested array (each row is an array)
             if (Array.isArray(parsed) && parsed.length > 0 && Array.isArray(parsed[0])) {
               // Convert nested arrays to strings by joining with spaces
-              llmColumnResult = parsed.map((row: any[]) => row.join(' '));
+              llmColumnResult = parsed.map((row: any[]) => row.join('~'));
             } else {
               llmColumnResult = parsed;
             }
@@ -423,6 +423,7 @@ Answer with just the date in M/D format:`;
                 const correctedDate = `${currentMonth}/${currDay}`;
                 llmColumnResult[i] = correctedDate;
                 extractions[i].llmColumnValue = correctedDate;
+                extractions[i].llmPerCellValue = correctedDate; // Also update per-cell value
                 correctionsCount++;
               }
               // If model read wrong month but we know we're in a later month
@@ -430,6 +431,7 @@ Answer with just the date in M/D format:`;
                 const correctedDate = `${currentMonth}/${currDay}`;
                 llmColumnResult[i] = correctedDate;
                 extractions[i].llmColumnValue = correctedDate;
+                extractions[i].llmPerCellValue = correctedDate; // Also update per-cell value
                 correctionsCount++;
               }
             }
@@ -1149,12 +1151,215 @@ export default function HybridFlightLogExtractor() {
     console.log(`[Process] Starting extraction with Request ID: ${requestId}`);
 
     try {
+      // ========== STEP 0: PREPROCESS IMAGES ==========
+      console.log('[Process] Step 0: Preprocessing images...');
+      setStatus('Preprocessing images...');
+      setProgress(5);
+
+      // Get original image dimensions
+      const getImageSize = (uri: string): Promise<{width: number, height: number}> => {
+        return new Promise((resolve, reject) => {
+          Image.getSize(uri, (width, height) => resolve({width, height}), reject);
+        });
+      };
+
+      const leftSize = await getImageSize(leftImage);
+      const rightSize = await getImageSize(rightImage);
+      
+      console.log(`  Left image: ${leftSize.width} × ${leftSize.height} pixels`);
+      console.log(`  Right image: ${rightSize.width} × ${rightSize.height} pixels`);
+
+      let leftImageToUse = leftImage;
+      let rightImageToUse = rightImage;
+      let leftWasRotated = false;
+      let rightWasRotated = false;
+      let leftWasDownsized = false;
+      let rightWasDownsized = false;
+
+      // Check and rotate left image if needed
+      if (leftSize.height > leftSize.width) {
+        console.log(`  Left image is portrait, checking orientation...`);
+        const leftOCRCheck = await DocumentRecognizer({ uri: leftImage, searchCells: [] });
+        const headerKeywords = ['DATE', 'AIRCRAFT', 'MAKE', 'MODEL', 'FROM', 'TO'];
+        let foundHeaderAtTop = false;
+        
+        if (leftOCRCheck.tables && leftOCRCheck.tables.length > 0) {
+          for (const table of leftOCRCheck.tables) {
+            for (const column of table.columns || []) {
+              for (const cell of column.cells || []) {
+                if (cell.text && cell.boundingBox) {
+                  const textUpper = cell.text.toUpperCase();
+                  const isHeader = headerKeywords.some(kw => textUpper.includes(kw));
+                  const isInTopThird = cell.boundingBox.yMin < leftSize.height / 3;
+                  if (isHeader && isInTopThird) {
+                    foundHeaderAtTop = true;
+                    break;
+                  }
+                }
+              }
+              if (foundHeaderAtTop) break;
+            }
+            if (foundHeaderAtTop) break;
+          }
+        }
+        
+        console.log(`  Rotating left image 90° counter-clockwise to landscape`);
+        const rotated = await ImageManipulator.manipulateAsync(
+          leftImage,
+          [{ rotate: -90 }],
+          { compress: 1, format: ImageManipulator.SaveFormat.PNG }
+        );
+        leftImageToUse = rotated.uri;
+        leftWasRotated = true;
+        const newWidth = leftSize.height;
+        const newHeight = leftSize.width;
+        leftSize.width = newWidth;
+        leftSize.height = newHeight;
+      }
+
+      // Check and rotate right image if needed
+      if (rightSize.height > rightSize.width) {
+        console.log(`  Right image is portrait, checking orientation...`);
+        const rightOCRCheck = await DocumentRecognizer({ uri: rightImage, searchCells: [] });
+        const headerKeywords = ['DATE', 'AIRCRAFT', 'MAKE', 'MODEL', 'FROM', 'TO'];
+        let foundHeaderAtTop = false;
+        
+        if (rightOCRCheck.tables && rightOCRCheck.tables.length > 0) {
+          for (const table of rightOCRCheck.tables) {
+            for (const column of table.columns || []) {
+              for (const cell of column.cells || []) {
+                if (cell.text && cell.boundingBox) {
+                  const textUpper = cell.text.toUpperCase();
+                  const isHeader = headerKeywords.some(kw => textUpper.includes(kw));
+                  const isInTopThird = cell.boundingBox.yMin < rightSize.height / 3;
+                  if (isHeader && isInTopThird) {
+                    foundHeaderAtTop = true;
+                    break;
+                  }
+                }
+              }
+              if (foundHeaderAtTop) break;
+            }
+            if (foundHeaderAtTop) break;
+          }
+        }
+        
+        console.log(`  Rotating right image 90° counter-clockwise to landscape`);
+        const rotated = await ImageManipulator.manipulateAsync(
+          rightImage,
+          [{ rotate: -90 }],
+          { compress: 1, format: ImageManipulator.SaveFormat.PNG }
+        );
+        rightImageToUse = rotated.uri;
+        rightWasRotated = true;
+        const newWidth = rightSize.height;
+        const newHeight = rightSize.width;
+        rightSize.width = newWidth;
+        rightSize.height = newHeight;
+      }
+
+      // Downsize left image if needed
+      if (leftSize.width > 1024) {
+        const scale = 1024 / leftSize.width;
+        const newHeight = Math.round(leftSize.height * scale);
+        console.log(`  Downsizing left image from ${leftSize.width}×${leftSize.height} to 1024×${newHeight}`);
+        const resized = await ImageManipulator.manipulateAsync(
+          leftImageToUse,
+          [{ resize: { width: 1024 } }],
+          { compress: 1, format: ImageManipulator.SaveFormat.PNG }
+        );
+        leftImageToUse = resized.uri;
+        leftWasDownsized = true;
+        leftSize.width = 1024;
+        leftSize.height = newHeight;
+      }
+
+      // Downsize right image if needed
+      if (rightSize.width > 1024) {
+        const scale = 1024 / rightSize.width;
+        const newHeight = Math.round(rightSize.height * scale);
+        console.log(`  Downsizing right image from ${rightSize.width}×${rightSize.height} to 1024×${newHeight}`);
+        const resized = await ImageManipulator.manipulateAsync(
+          rightImageToUse,
+          [{ resize: { width: 1024 } }],
+          { compress: 1, format: ImageManipulator.SaveFormat.PNG }
+        );
+        rightImageToUse = resized.uri;
+        rightWasDownsized = true;
+        rightSize.width = 1024;
+        rightSize.height = newHeight;
+      }
+
+      console.log(`  Final left: ${leftSize.width} × ${leftSize.height} ${leftWasRotated ? '🔄' : ''} ${leftWasDownsized ? '⬇️' : ''}`);
+      console.log(`  Final right: ${rightSize.width} × ${rightSize.height} ${rightWasRotated ? '🔄' : ''} ${rightWasDownsized ? '⬇️' : ''}`);
+
+      // ========== STEP 0.5: CALCULATE TABLE BOUNDS ==========
+      console.log('[Process] Step 0.5: Calculating table bounds...');
+      setStatus('Calculating table bounds...');
+      setProgress(10);
+
+      // Run OCR to get table structure and bounds
+      const leftOCR = await DocumentRecognizer({ uri: leftImageToUse, searchCells: [] });
+      const rightOCR = await DocumentRecognizer({ uri: rightImageToUse, searchCells: [] });
+
+      // Calculate table bounds from OCR data
+      const calculateBounds = (ocrResult: any) => {
+        if (!ocrResult.tables || ocrResult.tables.length === 0) {
+          return { x: 0, y: 0, width: 0, height: 0 };
+        }
+
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = 0;
+        let maxY = 0;
+
+        for (const table of ocrResult.tables) {
+          for (const column of table.columns || []) {
+            for (const cell of column.cells || []) {
+              if (cell.boundingBox) {
+                minX = Math.min(minX, cell.boundingBox.xMin);
+                minY = Math.min(minY, cell.boundingBox.yMin);
+                maxX = Math.max(maxX, cell.boundingBox.xMax);
+                maxY = Math.max(maxY, cell.boundingBox.yMax);
+              }
+            }
+          }
+        }
+
+        // Expand by 13 pixels to reach actual grid lines
+        const gridMargin = 13;
+        return {
+          x: Math.max(0, Math.round(minX - gridMargin)),
+          y: Math.max(0, Math.round(minY - gridMargin)),
+          width: Math.round((maxX - minX) + (gridMargin * 2)),
+          height: Math.round((maxY - minY) + (gridMargin * 2)),
+        };
+      };
+
+      const leftTableBounds = calculateBounds(leftOCR);
+      const rightTableBounds = calculateBounds(rightOCR);
+
+      console.log(`📐 LEFT TABLE BOUNDS (pixels): x=${leftTableBounds.x}, y=${leftTableBounds.y}, width=${leftTableBounds.width}, height=${leftTableBounds.height}`);
+      console.log(`📐 RIGHT TABLE BOUNDS (pixels): x=${rightTableBounds.x}, y=${rightTableBounds.y}, width=${rightTableBounds.width}, height=${rightTableBounds.height}`);
+
+      const leftCoverage = {
+        widthPercent: (leftTableBounds.width / leftSize.width) * 100,
+        heightPercent: (leftTableBounds.height / leftSize.height) * 100,
+      };
+      const rightCoverage = {
+        widthPercent: (rightTableBounds.width / rightSize.width) * 100,
+        heightPercent: (rightTableBounds.height / rightSize.height) * 100,
+      };
+
+      console.log(`  Left coverage: ${leftCoverage.widthPercent.toFixed(1)}% width, ${leftCoverage.heightPercent.toFixed(1)}% height`);
+      console.log(`  Right coverage: ${rightCoverage.widthPercent.toFixed(1)}% width, ${rightCoverage.heightPercent.toFixed(1)}% height`);
+
       // ========== EXTRACT DATE COLUMN ==========
       console.log('[Process] Step 1: Extracting DATE column...');
       setStatus('Extracting DATE column...');
       setProgress(85);
 
-      const dateResult = await extractTextColumn('DATE', 16, 101, 48, 34, leftImage, 1200, contextRef.current, requestId, '2-3');
+      const dateResult = await extractTextColumn('DATE', 16, 101, 48, 34, leftImageToUse, 1200, contextRef.current, requestId, '2-3');
       const dateExtractions = dateResult.extractions;
       const cellPresenceMap = dateExtractions;
 
@@ -1195,23 +1400,31 @@ export default function HybridFlightLogExtractor() {
       // const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 74, 101, 55, 34, leftImage, 1200, contextRef.current, requestId);
       // const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImage, 1200, contextRef.current, requestId);  //Pretty good
       //const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImage, 1200, contextRef.current, requestId);
-      const aircraftMakeIdentResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImage, 1200, contextRef.current, requestId,'2-6'); // Use for make and ident
-      const fromToResult = await extractTextColumn('FROM-TO', 188, 101, 165, 34, leftImage, 1200, contextRef.current, requestId, '2-5'); // gets from-to and duration...but variable columns  with 2-5 columsn
+      const aircraftMakeIdentResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImageToUse, 1200, contextRef.current, requestId,'2-6'); // Use for make and ident
+      const fromToResult = await extractTextColumn('FROM-TO', 188, 101, 165, 34, leftImageToUse, 1200, contextRef.current, requestId, '2-5'); // gets from-to and duration...but variable columns  with 2-5 columsn
 
-      // Split aircraftMakeIdentResult into make and ident
-      const aircraftMakeExtractions = aircraftMakeIdentResult.extractions.map((cell: any) => {
-        const parts = (cell.llmColumnValue || '').split(/\s+/);
-        return { ...cell, llmColumnValue: parts[1] || '' };
-      });
-      
-      const aircraftIdentExtractions = aircraftMakeIdentResult.extractions.map((cell: any) => {
-        const parts = (cell.llmColumnValue || '').split(/\s+/);
-        return { ...cell, llmColumnValue: parts[2] || '' };
+      // Split aircraftMakeIdentResult into make and ident (split once, extract both)
+      const aircraftMakeExtractions: any[] = [];
+      const aircraftIdentExtractions: any[] = [];
+
+      aircraftMakeIdentResult.extractions.forEach((cell: any) => {
+        const parts = (cell.llmColumnValue || '').split('~');
+        aircraftMakeExtractions.push({ ...cell, llmColumnValue: parts[1] || '' });
+        aircraftIdentExtractions.push({ ...cell, llmColumnValue: parts[2] || '' });
       });
 
       const aircraftMakeResult = { ...aircraftMakeIdentResult, extractions: aircraftMakeExtractions };
       const aircraftIdentResult = { ...aircraftMakeIdentResult, extractions: aircraftIdentExtractions };
-      const fromToExtractions = fromToResult.extractions;
+      
+      const fromToExtractions = fromToResult.extractions.map((cell: any) => ({
+        ...cell,
+        llmColumnValue: (cell.llmColumnValue || '')
+          .split('~')
+          .slice(0, -2)
+          .join('-')
+      }));
+      fromToResult.extractions = fromToExtractions;
+
 
       // ========== EXTRACT TOTAL DURATION COLUMN ==========
       console.log('[Process] Step 3: Extracting TOTAL DURATION column...');

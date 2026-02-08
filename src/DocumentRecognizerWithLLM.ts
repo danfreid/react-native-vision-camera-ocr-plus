@@ -42,6 +42,13 @@ export interface FlightCalculations {
   nightLandings: number;
 }
 
+export interface TableBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface EnhancedTableResult {
   csv: string;
   leftTable: TableStructure;
@@ -52,6 +59,11 @@ export interface EnhancedTableResult {
     leftColumns: number;
     rightRows: number;
     rightColumns: number;
+  };
+  /** Overall table bounds in pixels (x, y, width, height) */
+  tableBounds: {
+    left: TableBounds;
+    right: TableBounds;
   };
   /** Raw JSON response from the LLM before CSV conversion */
   rawLLMResponse: {

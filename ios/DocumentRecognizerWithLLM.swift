@@ -108,18 +108,25 @@ class DocumentRecognizerWithLLM: NSObject {
         
         Task {
             do {
-                // Step 1: Extract raw OCR data with spatial information
+                // Step 0: Extract raw OCR data with spatial information
                 let leftOCR = try await extractOCRWithSpatialInfo(cgImage: leftCGImage, imageSize: leftImage.size)
                 let rightOCR = try await extractOCRWithSpatialInfo(cgImage: rightCGImage, imageSize: rightImage.size)
                 
-                // Step 2: Use LLM to understand table structure and correct errors
+                // Calculate overall table bounds in pixels
+                let leftBounds = calculateTableBounds(ocrData: leftOCR)
+                let rightBounds = calculateTableBounds(ocrData: rightOCR)
+                
+                print("📐 LEFT TABLE BOUNDS (pixels): x=\(Int(leftBounds.origin.x)), y=\(Int(leftBounds.origin.y)), width=\(Int(leftBounds.width)), height=\(Int(leftBounds.height))")
+                print("📐 RIGHT TABLE BOUNDS (pixels): x=\(Int(rightBounds.origin.x)), y=\(Int(rightBounds.origin.y)), width=\(Int(rightBounds.width)), height=\(Int(rightBounds.height))")
+                
+                // Step 1: Use LLM to understand table structure and correct errors
                 let leftTable = try await analyzeTableStructure(ocrData: leftOCR, context: contextPrompt, side: "left")
                 let rightTable = try await analyzeTableStructure(ocrData: rightOCR, context: contextPrompt, side: "right")
                 
-                // Step 3: Combine and align tables
+                // Step 2: Combine and align tables
                 let combinedCSV = combineTablesWithLLM(left: leftTable, right: rightTable)
                 
-                // Step 4: Calculate totals (skip CSV correction to avoid context window issues)
+                // Step 3: Calculate totals (skip CSV correction to avoid context window issues)
                 let calculations = try await calculateTotals(csv: combinedCSV, context: contextPrompt)
                 
                 resolve([
@@ -133,6 +140,20 @@ class DocumentRecognizerWithLLM: NSObject {
                         "rightRows": rightTable.rowCount,
                         "rightColumns": rightTable.columnCount
                     ],
+                    "tableBounds": [
+                        "left": [
+                            "x": Int(leftBounds.origin.x),
+                            "y": Int(leftBounds.origin.y),
+                            "width": Int(leftBounds.width),
+                            "height": Int(leftBounds.height)
+                        ],
+                        "right": [
+                            "x": Int(rightBounds.origin.x),
+                            "y": Int(rightBounds.origin.y),
+                            "width": Int(rightBounds.width),
+                            "height": Int(rightBounds.height)
+                        ]
+                    ],
                     "rawLLMResponse": [
                         "leftTable": serializeTable(leftTable),
                         "rightTable": serializeTable(rightTable),
@@ -143,6 +164,37 @@ class DocumentRecognizerWithLLM: NSObject {
                 reject("PROCESSING_ERROR", error.localizedDescription, error)
             }
         }
+    }
+    
+    // MARK: - Table Bounds Calculation
+    
+    private func calculateTableBounds(ocrData: [(text: String, bounds: CGRect, confidence: Float)]) -> CGRect {
+        guard !ocrData.isEmpty else {
+            return .zero
+        }
+        
+        // Find the bounding box that encompasses all text elements
+        var minX = CGFloat.greatestFiniteMagnitude
+        var minY = CGFloat.greatestFiniteMagnitude
+        var maxX: CGFloat = 0
+        var maxY: CGFloat = 0
+        
+        for item in ocrData {
+            minX = min(minX, item.bounds.minX)
+            minY = min(minY, item.bounds.minY)
+            maxX = max(maxX, item.bounds.maxX)
+            maxY = max(maxY, item.bounds.maxY)
+        }
+        
+        // Expand by 13 pixels to reach actual grid lines (not just text content)
+        let gridMargin: CGFloat = 13
+        
+        return CGRect(
+            x: max(0, minX - gridMargin),
+            y: max(0, minY - gridMargin),
+            width: (maxX - minX) + (gridMargin * 2),
+            height: (maxY - minY) + (gridMargin * 2)
+        )
     }
     
     // MARK: - OCR with Spatial Information
