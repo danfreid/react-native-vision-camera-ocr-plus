@@ -56,13 +56,14 @@ async function extractTextColumn(
   pixelThreshold: number = 1200,
   llamaContext?: LlamaContext | null,
   requestId?: string,
-  columnGrouping?: string
+  columnGrouping?: string,
+  rowSpacing: number = 36.25
 ) {
-  const ROW_SPACING = 36.25;
+  const ROW_SPACING = rowSpacing; // Use provided row spacing (scaled)
   const CROP_Y = 96;
   
   console.log(`[Process] Extracting ${columnName} column...`);
-  console.log(`  Column: x=${x}, y=${y}, width=${width}`);
+  console.log(`  Column: x=${x}, y=${y}, width=${width}, rowSpacing=${ROW_SPACING.toFixed(2)}`);
 
   // For DATE column: Skip Vision OCR and column LLM, go straight to per-cell LLM
   const skipColumnProcessing = (columnName === 'DATE');
@@ -72,28 +73,28 @@ async function extractTextColumn(
   let columnOCR: any = { tables: [] };
   let llmColumnResult: string[] = [];
 
+  // Always crop the column for display purposes (even for DATE)
+  const cropX = x - 5; // Expand left to include left grid line
+  const cropWidth = width + 20; // Expand right to include right grid line (10 pixels on each side)
+  
+  const lastRowY = y + (13 * ROW_SPACING);
+  const columnHeight = (lastRowY + height + 10) - CROP_Y;
+  
+  columnBbox = {
+    originX: cropX,
+    originY: CROP_Y, // Start at Y=96 like DATE column
+    width: cropWidth,
+    height: columnHeight,
+  };
+
+  croppedColumn = await ImageManipulator.manipulateAsync(
+    leftImage,
+    [{ crop: columnBbox }],
+    { compress: 1, format: ImageManipulator.SaveFormat.PNG }
+  );
+
   if (!skipColumnProcessing) {
-    // Crop the entire column for Vision OCR (start slightly above first data cell to include grid lines)
-    const cropX = x - 5; // Expand left to include left grid line
-    const cropWidth = width + 20; // Expand right to include right grid line (10 pixels on each side)
-    
-    const lastRowY = y + (13 * ROW_SPACING);
-    const columnHeight = (lastRowY + height + 10) - CROP_Y;
-    
-    columnBbox = {
-      originX: cropX,
-      originY: CROP_Y, // Start at Y=96 like DATE column
-      width: cropWidth,
-      height: columnHeight,
-    };
-
-    croppedColumn = await ImageManipulator.manipulateAsync(
-      leftImage,
-      [{ crop: columnBbox }],
-      { compress: 1, format: ImageManipulator.SaveFormat.PNG }
-    );
-
-    // Run Vision OCR on the cropped column
+    // Run Vision OCR on the cropped column (skip for DATE)
     columnOCR = await DocumentRecognizer({
       uri: croppedColumn.uri,
       searchCells: [],
@@ -176,11 +177,11 @@ async function extractTextColumn(
           } else {
             console.log(`  LLM Column: No JSON array found in response`);
           }
-        } catch (parseError: any) {
-          console.log(`  LLM Column Parse Error: ${parseError.message}`);
+        } catch (parseError) {
+          console.log(`  LLM Column Parse Error: ${(parseError as any).message}`);
         }
-      } catch (error: any) {
-        console.log(`  LLM Column Error: ${error?.message || 'Unknown error'}`);
+      } catch (error) {
+        console.log(`  LLM Column Error: ${(error as any)?.message || 'Unknown error'}`);
       }
     } else {
       console.log(`  LLM OCR skipped: No LLM context available`);
@@ -218,7 +219,7 @@ async function extractTextColumn(
         if (imageInfo.exists) {
           fileSize = (imageInfo as any).size || 0;
         }
-      } catch (error: any) {
+      } catch (error) {
         // Ignore
       }
 
@@ -282,12 +283,12 @@ async function extractTextColumn(
         visionRow: visionRow,
         visionColumn: visionColumn,
       });
-    } catch (error: any) {
+    } catch (error) {
       extractions.push({
         row: rowNum,
         column: columnName,
         hasContent: false,
-        error: error.message,
+        error: (error as any).message,
       });
     }
   }
@@ -386,8 +387,8 @@ Answer with just the date in M/D format:`;
         cell.llmPerCellValue = perCellText;
         cell.llmColumnValue = perCellText; // Use per-cell as the final value
         llmColumnResult[idx] = perCellText;
-      } catch (error: any) {
-        console.log(`  [Per-Cell] Row ${cell.row}: Error - ${error.message}`);
+      } catch (error) {
+        console.log(`  [Per-Cell] Row ${cell.row}: Error - ${(error as any).message}`);
       }
     }
 
@@ -477,8 +478,8 @@ Answer with just the date in M/D format:`;
           let perCellText = (perCellResponse.text || '').trim().replace(/```json\s*/g, '').replace(/```\s*/g, '').replace(/["\[\]]/g, '');
           cell.llmPerCellValue = perCellText;
           llmColumnResult[i] = perCellText;
-        } catch (error: any) {
-          console.log(`  [Per-Cell] Row ${cell.row}: Error - ${error.message}`);
+        } catch (error) {
+          console.log(`  [Per-Cell] Row ${cell.row}: Error - ${(error as any).message}`);
         }
       }
     }
@@ -510,9 +511,10 @@ async function extractFlightDurationColumn(
   leftImage: string,
   pixelThreshold: number = 5800,
   llamaContext?: LlamaContext | null,
-  requestId?: string
+  requestId?: string,
+  rowSpacing: number = 36.25
 ) {
-  const ROW_SPACING = 36.25;
+  const ROW_SPACING = rowSpacing; // Use provided row spacing (scaled)
   const CROP_Y = 96;
   
   // Sub-columns (estimate: ~65% for hours, ~35% for tenths)
@@ -522,7 +524,7 @@ async function extractFlightDurationColumn(
   const sub2X = x + sub1Width + 1;
 
   console.log(`[Process] Extracting ${columnName} column...`);
-  console.log(`  Full column: x=${x}, y=${y}, width=${width}`);
+  console.log(`  Full column: x=${x}, y=${y}, width=${width}, rowSpacing=${ROW_SPACING.toFixed(2)}`);
 
   // Crop the entire column for Vision OCR
   const cropX = x - 7;
@@ -594,12 +596,12 @@ async function extractFlightDurationColumn(
         } else {
           console.log(`  LLM Column: No JSON array found in response`);
         }
-      } catch (parseError: any) {
-        console.log(`  LLM Column Parse Error: ${parseError.message}`);
+      } catch (parseError) {
+        console.log(`  LLM Column Parse Error: ${(parseError as any).message}`);
       }
-    } catch (error: any) {
-      console.log(`  LLM Column Error: ${error?.message || 'Unknown error'}`);
-      console.log(`  LLM Column Error Stack:`, error?.stack);
+    } catch (error) {
+      console.log(`  LLM Column Error: ${(error as any)?.message || 'Unknown error'}`);
+      console.log(`  LLM Column Error Stack:`, (error as any)?.stack);
       console.log(`  LLM Column Error Object:`, JSON.stringify(error, null, 2));
     }
   } else {
@@ -635,7 +637,7 @@ async function extractFlightDurationColumn(
         if (imageInfo.exists) {
           fileSize = (imageInfo as any).size || 0;
         }
-      } catch (error: any) {
+      } catch (error) {
         // Ignore
       }
 
@@ -662,7 +664,7 @@ async function extractFlightDurationColumn(
         if (fullCellOCR.rawText && fullCellOCR.rawText.trim()) {
           fullCellText = fullCellOCR.rawText.trim();
         }
-      } catch (error: any) {
+      } catch (error) {
         // Ignore
       }
 
@@ -711,7 +713,7 @@ async function extractFlightDurationColumn(
               hours = sub1Text;
             }
           }
-        } catch (error: any) {
+        } catch (error) {
           // Ignore
         }
 
@@ -727,7 +729,7 @@ async function extractFlightDurationColumn(
               tenths = sub2Text;
             }
           }
-        } catch (error: any) {
+        } catch (error) {
           // Ignore
         }
       }
@@ -769,12 +771,12 @@ async function extractFlightDurationColumn(
         croppedSub1Uri: croppedSub1.uri,
         croppedSub2Uri: croppedSub2.uri,
       });
-    } catch (error: any) {
+    } catch (error) {
       extractions.push({
         row: rowNum,
         column: columnName,
         hasContent: false,
-        error: error.message,
+        error: (error as any).message,
       });
     }
   }
@@ -922,9 +924,9 @@ export default function HybridFlightLogExtractor() {
       } else {
         setStatus('No model found. Tap ⚙️ to download.');
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Model check error:', error);
-      setStatus(`Error: ${error.message}`);
+      setStatus(`Error: ${(error as any).message}`);
     }
   };
 
@@ -977,10 +979,10 @@ export default function HybridFlightLogExtractor() {
       setModelReady(true);
       setStatus('Model ready');
       console.log(`[Model] ${model.name} loaded and ready`);
-    } catch (error: any) {
+    } catch (error) {
       console.error('[Model] Load error:', error);
       console.error('[Model] Error details:', JSON.stringify(error, null, 2));
-      const errorMsg = `Failed to load model: ${error.message || 'Unknown error'}`;
+      const errorMsg = `Failed to load model: ${(error as any).message || 'Unknown error'}`;
       setStatus(errorMsg);
       Alert.alert('Model Load Failed', errorMsg);
     }
@@ -1062,9 +1064,9 @@ export default function HybridFlightLogExtractor() {
 
       // Load the model
       await loadModel(model);
-    } catch (error: any) {
+    } catch (error) {
       setIsDownloading(false);
-      Alert.alert('Error', error.message);
+      Alert.alert('Error', (error as any).message);
     }
   };
 
@@ -1100,8 +1102,8 @@ export default function HybridFlightLogExtractor() {
               );
 
               Alert.alert('Deleted', `${model.name} has been removed.`);
-            } catch (error: any) {
-              Alert.alert('Error', `Failed to delete: ${error.message}`);
+            } catch (error) {
+              Alert.alert('Error', `Failed to delete: ${(error as any).message}`);
             }
           },
         },
@@ -1125,8 +1127,8 @@ export default function HybridFlightLogExtractor() {
           setRightImage(pickerResult.assets[0].uri);
         }
       }
-    } catch (error: any) {
-      Alert.alert('Error', error.message);
+    } catch (error) {
+      Alert.alert('Error', (error as any).message);
     }
   };
 
@@ -1354,12 +1356,47 @@ export default function HybridFlightLogExtractor() {
       console.log(`  Left coverage: ${leftCoverage.widthPercent.toFixed(1)}% width, ${leftCoverage.heightPercent.toFixed(1)}% height`);
       console.log(`  Right coverage: ${rightCoverage.widthPercent.toFixed(1)}% width, ${rightCoverage.heightPercent.toFixed(1)}% height`);
 
+      // ========== CALCULATE SCALING FACTORS ==========
+      // Reference dimensions (from original example image)
+      const REFERENCE_TABLE = {
+        width: 937,
+        height: 706,
+        x: 9,
+        y: 13,
+      };
+
+      // Calculate scale factors based on actual table dimensions
+      const leftScaleX = leftTableBounds.width / REFERENCE_TABLE.width;
+      const leftScaleY = leftTableBounds.height / REFERENCE_TABLE.height;
+      const leftOffsetX = leftTableBounds.x - (REFERENCE_TABLE.x * leftScaleX);
+      const leftOffsetY = leftTableBounds.y - (REFERENCE_TABLE.y * leftScaleY);
+
+      console.log(`  Left scale factors: X=${leftScaleX.toFixed(3)}, Y=${leftScaleY.toFixed(3)}`);
+      console.log(`  Left offsets: X=${leftOffsetX.toFixed(1)}, Y=${leftOffsetY.toFixed(1)}`);
+
+      // Helper function to scale column coordinates
+      const scaleColumn = (x: number, y: number, width: number, height: number) => ({
+        x: Math.round(x * leftScaleX + leftOffsetX),
+        y: Math.round(y * leftScaleY + leftOffsetY),
+        width: Math.round(width * leftScaleX),
+        height: Math.round(height * leftScaleY),
+      });
+
+      // Scale row spacing
+      const ROW_SPACING_ORIGINAL = 36.25;  // Original row spacing from reference image
+      const scaledRowSpacing = ROW_SPACING_ORIGINAL * leftScaleY;
+      console.log(`  Scaled row spacing: ${scaledRowSpacing.toFixed(2)} (original: ${ROW_SPACING_ORIGINAL})`);
+
       // ========== EXTRACT DATE COLUMN ==========
       console.log('[Process] Step 1: Extracting DATE column...');
       setStatus('Extracting DATE column...');
       setProgress(85);
 
-      const dateResult = await extractTextColumn('DATE', 16, 101, 48, 34, leftImageToUse, 1200, contextRef.current, requestId, '2-3');
+      // Original coordinates: x=16, y=101, width=48, height=34
+      const dateCol = scaleColumn(16, 101, 48, 34);
+      console.log(`  DATE column scaled: x=${dateCol.x}, y=${dateCol.y}, width=${dateCol.width}, height=${dateCol.height}`);
+
+      const dateResult = await extractTextColumn('DATE', dateCol.x, dateCol.y, dateCol.width, dateCol.height, leftImageToUse, 1200, contextRef.current, requestId, '2-3', scaledRowSpacing);
       const dateExtractions = dateResult.extractions;
       const cellPresenceMap = dateExtractions;
 
@@ -1397,11 +1434,16 @@ export default function HybridFlightLogExtractor() {
 
       // Extract 3 text columns using helper function (similar to DATE)
       // All are non-shaded and should have values in all rows
-      // const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 74, 101, 55, 34, leftImage, 1200, contextRef.current, requestId);
-      // const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImage, 1200, contextRef.current, requestId);  //Pretty good
-      //const aircraftMakeResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImage, 1200, contextRef.current, requestId);
-      const aircraftMakeIdentResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', 16, 101, 165, 34, leftImageToUse, 1200, contextRef.current, requestId,'2-6'); // Use for make and ident
-      const fromToResult = await extractTextColumn('FROM-TO', 188, 101, 165, 34, leftImageToUse, 1200, contextRef.current, requestId, '2-5'); // gets from-to and duration...but variable columns  with 2-5 columsn
+      
+      // Original: x=16, y=101, width=165, height=34 (combined MAKE+IDENT column)
+      const aircraftMakeIdentCol = scaleColumn(16, 101, 165, 34);
+      console.log(`  AIRCRAFT MAKE/IDENT column scaled: x=${aircraftMakeIdentCol.x}, y=${aircraftMakeIdentCol.y}, width=${aircraftMakeIdentCol.width}, height=${aircraftMakeIdentCol.height}`);
+      const aircraftMakeIdentResult = await extractTextColumn('AIRCRAFT MAKE AND MODEL', aircraftMakeIdentCol.x, aircraftMakeIdentCol.y, aircraftMakeIdentCol.width, aircraftMakeIdentCol.height, leftImageToUse, 1200, contextRef.current, requestId,'2-6', scaledRowSpacing);
+      
+      // Original: x=188, y=101, width=165, height=34 (combined FROM-TO column)
+      const fromToCol = scaleColumn(188, 101, 165, 34);
+      console.log(`  FROM-TO column scaled: x=${fromToCol.x}, y=${fromToCol.y}, width=${fromToCol.width}, height=${fromToCol.height}`);
+      const fromToResult = await extractTextColumn('FROM-TO', fromToCol.x, fromToCol.y, fromToCol.width, fromToCol.height, leftImageToUse, 1200, contextRef.current, requestId, '2-5', scaledRowSpacing);
 
       // Split aircraftMakeIdentResult into make and ident (split once, extract both)
       const aircraftMakeExtractions: any[] = [];
@@ -1431,7 +1473,10 @@ export default function HybridFlightLogExtractor() {
       setStatus('Extracting TOTAL DURATION column...');
       setProgress(88);
 
-      const totalResult = await extractFlightDurationColumn('TOTAL DURATION', 292, 100, 66, 34, leftImage, 5500, contextRef.current, requestId); // Shaded, all have content
+      // Original: x=292, y=100, width=66, height=34
+      const totalCol = scaleColumn(292, 100, 66, 34);
+      console.log(`  TOTAL DURATION column scaled: x=${totalCol.x}, y=${totalCol.y}, width=${totalCol.width}, height=${totalCol.height}`);
+      const totalResult = await extractFlightDurationColumn('TOTAL DURATION', totalCol.x, totalCol.y, totalCol.width, totalCol.height, leftImageToUse, 5500, contextRef.current, requestId, scaledRowSpacing);
       const totalExtractions = totalResult.extractions;
 
       // ========== EXTRACT TURBOJET AND TURBOPROP COLUMNS ==========
@@ -1439,10 +1484,16 @@ export default function HybridFlightLogExtractor() {
       setStatus('Extracting TURBOJET and TURBOPROP columns...');
       setProgress(92);
 
-      const turbojetResult = await extractFlightDurationColumn('TURBOJET', 566, 101, 67, 34, leftImage, 5800, contextRef.current, requestId);
+      // Original: x=566, y=101, width=67, height=34
+      const turbojetCol = scaleColumn(566, 101, 67, 34);
+      console.log(`  TURBOJET column scaled: x=${turbojetCol.x}, y=${turbojetCol.y}, width=${turbojetCol.width}, height=${turbojetCol.height}`);
+      const turbojetResult = await extractFlightDurationColumn('TURBOJET', turbojetCol.x, turbojetCol.y, turbojetCol.width, turbojetCol.height, leftImageToUse, 5800, contextRef.current, requestId, scaledRowSpacing);
       const turbojetExtractions = turbojetResult.extractions;
 
-      const turbopropResult = await extractFlightDurationColumn('TURBOPROP', 776, 101, 67, 34, leftImage, 3000, contextRef.current, requestId); // White background - much lower threshold
+      // Original: x=776, y=101, width=67, height=34
+      const turbopropCol = scaleColumn(776, 101, 67, 34);
+      console.log(`  TURBOPROP column scaled: x=${turbopropCol.x}, y=${turbopropCol.y}, width=${turbopropCol.width}, height=${turbopropCol.height}`);
+      const turbopropResult = await extractFlightDurationColumn('TURBOPROP', turbopropCol.x, turbopropCol.y, turbopropCol.width, turbopropCol.height, leftImageToUse, 3000, contextRef.current, requestId, scaledRowSpacing);
       const turbopropExtractions = turbopropResult.extractions;
 
       /*
@@ -1809,9 +1860,9 @@ export default function HybridFlightLogExtractor() {
 
       // Return immediately - we have what we need
       return;
-    } catch (error: any) {
+    } catch (error) {
       console.error('[Process] ERROR:', error);
-      Alert.alert('Error', error.message);
+      Alert.alert('Error', (error as any).message);
       setStatus('Error occurred');
     } finally {
       setIsProcessing(false);
@@ -1851,8 +1902,8 @@ export default function HybridFlightLogExtractor() {
       const file = new File(Paths.cache, `flight-log-${Date.now()}.csv`);
       await file.write(result2.csv);
       await Sharing.shareAsync(file.uri);
-    } catch (error: any) {
-      Alert.alert('Error', error.message);
+    } catch (error) {
+      Alert.alert('Error', (error as any).message);
     }
   };
 
@@ -1895,9 +1946,9 @@ export default function HybridFlightLogExtractor() {
         mimeType: 'text/plain',
         dialogTitle: 'Share DATE Column Report',
       });
-    } catch (error: any) {
+    } catch (error) {
       console.error('[Share] Error:', error);
-      Alert.alert('Error', error.message);
+      Alert.alert('Error', (error as any).message);
     }
   };
 
